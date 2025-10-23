@@ -1,0 +1,61 @@
+[workspace]
+members = ["agent", "server", "shared"]
+resolver = "3"
+
+[workspace.dependencies]
+# Common dependencies shared across crates
+tokio = { version = "1.47.1", features = ["full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+toml = "0.9.7"
+blake3 = "1.8.2"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+regex = "1.11.3"
+
+# SQL task dependencies
+rsql_drivers = "0.19.2"
+rsql_driver = "0.19.2"
+
+anyhow = "1.0.100"
+thiserror = "2.0.17"
+tempfile = "3.23.0"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+tracing-appender = "0.2.3"
+base64 = "0.22.1"
+flate2 = "1.1.2"
+chrono = { version = "0.4.42", features = ["serde"] }
+
+# Server-specific dependencies
+axum = "0.8.6"
+tower = "0.5.2"
+
+# Agent-specific dependencies
+reqwest = { version = "0.12.23", features = ["json", "stream"] }
+hickory-resolver = "0.25.2"
+socket2 = "0.6.0"
+url = "2.5.7"
+hickory-client = "0.25.2"
+openssl = { version = "0.10.73"}
+tokio-openssl = "0.6.5"
+ping-async = "1.0.1"
+clap = { version = "4.5", features = ["derive"] }
+rand = "0.8"
+futures-util = "0.3.30"
+
+[workspace.package]
+version = "0.5.0"
+edition = "2021"
+license = "MIT License"
+authors = ["Maciej Wilamowski - Sycope"]
+repository = "https://github.com/your-org/networker"
+description = "Network Health and Performance Monitoring System"
+
+# Workspace-level settings for consistent builds
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+debug = 2

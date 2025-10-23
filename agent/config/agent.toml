@@ -1,0 +1,30 @@
+agent_id = "wmd"
+central_server_url = "https://linksense.wilam.ovh"
+api_key = "N33dekwKfEC5meM78uyqoAmuJuAkbRCQYJF"
+local_data_retention_days = 7
+auto_update_tasks = false
+
+# Optional: Interval in seconds between database flushes for buffered metrics (default: 5, min: 1, max: 60)
+# Lower values provide near real-time metrics but increase database load
+# Higher values reduce database writes but increase metric latency
+# metrics_flush_interval_seconds = 5
+
+# Metrics submission settings (optional, defaults shown)
+# metrics_send_interval_seconds = 30        # How often to push metrics to server
+# metrics_batch_size = 50                   # Number of metrics to send per batch
+# metrics_max_retries = 10                  # Maximum retry attempts for failed sends
+# queue_cleanup_interval_seconds = 3600     # Cleanup sent metrics interval (1 hour)
+
+# Data management (optional, defaults shown)
+# data_cleanup_interval_seconds = 86400     # Daily cleanup of old data (24 hours)
+# stats_report_interval_seconds = 300       # Stats logging interval (5 minutes)
+
+# Performance tuning (optional, defaults shown)
+# max_concurrent_tasks = 50                 # Maximum parallel task execution
+# http_response_max_size_mb = 100           # Max HTTP response body size in MB
+# http_client_timeout_seconds = 30          # Server communication timeout
+# database_busy_timeout_seconds = 5         # SQLite lock timeout
+
+# Shutdown behavior (optional, defaults shown)
+# graceful_shutdown_timeout_seconds = 30    # Wait time for in-flight tasks during shutdown
+# channel_buffer_size = 1000                # Result channel capacity for task results
