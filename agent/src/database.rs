@@ -28,7 +28,7 @@ mod db_tcp;
 mod db_tls;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use shared::{
     config::TaskType,
     metrics::{AggregatedMetricData, AggregatedMetrics, MetricData, RawMetricData},
@@ -146,23 +146,21 @@ impl AgentDatabase {
         let conn = self.get_connection()?;
 
         match &metric.data {
-            RawMetricData::Ping(ping_data) => db_ping::store_raw_metric(&conn, metric, ping_data),
-            RawMetricData::Tcp(tcp_data) => db_tcp::store_raw_metric(&conn, metric, tcp_data),
-            RawMetricData::HttpGet(http_data) => {
-                db_http::store_raw_metric(&conn, metric, http_data)
-            }
+            RawMetricData::Ping(ping_data) => db_ping::store_raw_metric(conn, metric, ping_data),
+            RawMetricData::Tcp(tcp_data) => db_tcp::store_raw_metric(conn, metric, tcp_data),
+            RawMetricData::HttpGet(http_data) => db_http::store_raw_metric(conn, metric, http_data),
             RawMetricData::TlsHandshake(tls_data) => {
-                db_tls::store_raw_metric(&conn, metric, tls_data)
+                db_tls::store_raw_metric(conn, metric, tls_data)
             }
             RawMetricData::HttpContent(http_content_data) => {
-                db_http_content::store_raw_metric(&conn, metric, http_content_data)
+                db_http_content::store_raw_metric(conn, metric, http_content_data)
             }
-            RawMetricData::DnsQuery(dns_data) => db_dns::store_raw_metric(&conn, metric, dns_data),
+            RawMetricData::DnsQuery(dns_data) => db_dns::store_raw_metric(conn, metric, dns_data),
             RawMetricData::Bandwidth(bandwidth_data) => {
-                db_bandwidth::store_raw_metric(&conn, metric, bandwidth_data)
+                db_bandwidth::store_raw_metric(conn, metric, bandwidth_data)
             }
             #[cfg(feature = "sql-tasks")]
-            RawMetricData::SqlQuery(sql_data) => db_sql::store_raw_metric(&conn, metric, sql_data),
+            RawMetricData::SqlQuery(sql_data) => db_sql::store_raw_metric(conn, metric, sql_data),
         }
     }
 
@@ -183,73 +181,34 @@ impl AgentDatabase {
 
         match task_type {
             TaskType::Ping => {
-                return db_ping::generate_aggregated_metrics(
-                    &conn,
-                    task_name,
-                    period_start,
-                    period_end,
-                );
+                db_ping::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
             TaskType::Tcp => {
-                return db_tcp::generate_aggregated_metrics(
-                    &conn,
-                    task_name,
-                    period_start,
-                    period_end,
-                );
+                db_tcp::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
             TaskType::HttpGet => {
-                return db_http::generate_aggregated_metrics(
-                    &conn,
-                    task_name,
-                    period_start,
-                    period_end,
-                );
+                db_http::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
             TaskType::TlsHandshake => {
-                return db_tls::generate_aggregated_metrics(
-                    &conn,
-                    task_name,
-                    period_start,
-                    period_end,
-                );
+                db_tls::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
-            TaskType::HttpContent => {
-                return db_http_content::generate_aggregated_metrics(
-                    &conn,
-                    task_name,
-                    period_start,
-                    period_end,
-                );
-            }
+            TaskType::HttpContent => db_http_content::generate_aggregated_metrics(
+                conn,
+                task_name,
+                period_start,
+                period_end,
+            ),
             TaskType::DnsQuery | TaskType::DnsQueryDoh => {
-                return db_dns::generate_aggregated_metrics(
-                    &conn,
-                    task_name,
-                    period_start,
-                    period_end,
-                );
+                db_dns::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
             TaskType::Bandwidth => {
-                return db_bandwidth::generate_aggregated_metrics(
-                    &conn,
-                    task_name,
-                    period_start,
-                    period_end,
-                );
+                db_bandwidth::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
             #[cfg(feature = "sql-tasks")]
             TaskType::SqlQuery => {
-                return db_sql::generate_aggregated_metrics(
-                    &conn,
-                    task_name,
-                    period_start,
-                    period_end,
-                );
+                db_sql::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
         }
-
-        Ok(None)
     }
 
     /// Clean up old data from the database based on the retention policy.
@@ -383,29 +342,29 @@ impl AgentDatabase {
         let conn = self.get_connection()?;
         let row_id = match &metrics.data {
             AggregatedMetricData::Ping(ping_data) => {
-                db_ping::store_aggregated_metric(&conn, metrics, ping_data)?
+                db_ping::store_aggregated_metric(conn, metrics, ping_data)?
             }
             AggregatedMetricData::Tcp(tcp_data) => {
-                db_tcp::store_aggregated_metric(&conn, metrics, tcp_data)?
+                db_tcp::store_aggregated_metric(conn, metrics, tcp_data)?
             }
             AggregatedMetricData::HttpGet(http_data) => {
-                db_http::store_aggregated_metric(&conn, metrics, http_data)?
+                db_http::store_aggregated_metric(conn, metrics, http_data)?
             }
             AggregatedMetricData::TlsHandshake(tls_data) => {
-                db_tls::store_aggregated_metric(&conn, metrics, tls_data)?
+                db_tls::store_aggregated_metric(conn, metrics, tls_data)?
             }
             AggregatedMetricData::HttpContent(http_content_data) => {
-                db_http_content::store_aggregated_metric(&conn, metrics, http_content_data)?
+                db_http_content::store_aggregated_metric(conn, metrics, http_content_data)?
             }
             AggregatedMetricData::DnsQuery(dns_data) => {
-                db_dns::store_aggregated_metric(&conn, metrics, dns_data)?
+                db_dns::store_aggregated_metric(conn, metrics, dns_data)?
             }
             AggregatedMetricData::Bandwidth(bandwidth_data) => {
-                db_bandwidth::store_aggregated_metric(&conn, metrics, bandwidth_data)?
+                db_bandwidth::store_aggregated_metric(conn, metrics, bandwidth_data)?
             }
             #[cfg(feature = "sql-tasks")]
             AggregatedMetricData::SqlQuery(sql_data) => {
-                db_sql::store_aggregated_metric(&conn, metrics, sql_data)?
+                db_sql::store_aggregated_metric(conn, metrics, sql_data)?
             }
         };
 
@@ -451,6 +410,7 @@ impl AgentDatabase {
     }
 
     /// Get queue statistics for monitoring
+    #[allow(dead_code)]
     pub async fn get_queue_stats(&mut self) -> Result<QueueStats> {
         let conn = self.get_connection()?;
         db_queue::get_queue_stats(conn)
@@ -465,7 +425,6 @@ impl AgentDatabase {
 //     pub aggregated_metrics_count: u64,
 //     pub database_size_bytes: u64,
 // }
-
 /// A helper function to get the current Unix timestamp in seconds.
 fn current_timestamp() -> u64 {
     SystemTime::now()
@@ -478,6 +437,7 @@ fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
     use shared::config::TaskType;
     use shared::metrics::{MetricData, RawMetricData, RawPingMetric};
     use tempfile::TempDir;

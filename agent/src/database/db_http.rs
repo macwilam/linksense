@@ -165,10 +165,8 @@ pub(super) fn generate_aggregated_metrics(
         },
     )?;
 
-    for row in rows {
-        if let Ok((code, count)) = row {
-            status_code_distribution.insert(code, count);
-        }
+    for row in rows.flatten() {
+        status_code_distribution.insert(row.0, row.1);
     }
 
     let row = stmt.query_row(

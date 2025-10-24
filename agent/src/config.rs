@@ -737,13 +737,12 @@ mod tests {
                 .local_data_retention_days,
             7
         );
-        assert_eq!(
-            config_manager
+        assert!(
+            !config_manager
                 .agent_config
                 .as_ref()
                 .unwrap()
-                .auto_update_tasks,
-            false
+                .auto_update_tasks
         );
 
         // Override all fields
@@ -786,13 +785,12 @@ mod tests {
                 .local_data_retention_days,
             30
         );
-        assert_eq!(
+        assert!(
             config_manager
                 .agent_config
                 .as_ref()
                 .unwrap()
-                .auto_update_tasks,
-            true
+                .auto_update_tasks
         );
 
         // Verify persistence by loading again
@@ -810,13 +808,12 @@ mod tests {
                 .local_data_retention_days,
             30
         );
-        assert_eq!(
+        assert!(
             config_manager2
                 .agent_config
                 .as_ref()
                 .unwrap()
-                .auto_update_tasks,
-            true
+                .auto_update_tasks
         );
     }
 
@@ -863,13 +860,12 @@ mod tests {
         config_manager.load_config().await.unwrap();
 
         // Initial value is false
-        assert_eq!(
-            config_manager
+        assert!(
+            !config_manager
                 .agent_config
                 .as_ref()
                 .unwrap()
-                .auto_update_tasks,
-            false
+                .auto_update_tasks
         );
 
         // Override to true
@@ -879,13 +875,12 @@ mod tests {
             .unwrap();
 
         assert!(changed);
-        assert_eq!(
+        assert!(
             config_manager
                 .agent_config
                 .as_ref()
                 .unwrap()
-                .auto_update_tasks,
-            true
+                .auto_update_tasks
         );
 
         // Override back to false
@@ -895,13 +890,12 @@ mod tests {
             .unwrap();
 
         assert!(changed2);
-        assert_eq!(
-            config_manager
+        assert!(
+            !config_manager
                 .agent_config
                 .as_ref()
                 .unwrap()
-                .auto_update_tasks,
-            false
+                .auto_update_tasks
         );
     }
 

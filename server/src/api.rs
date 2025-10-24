@@ -1178,9 +1178,9 @@ reconfigure_check_interval_seconds = 10
         assert!(responses[0].data_size_bytes.is_some());
 
         // Verify other 4 agents are told to delay
-        for i in 1..5 {
+        for (i, response) in responses.iter().enumerate().take(5).skip(1) {
             assert_eq!(
-                responses[i].action,
+                response.action,
                 BandwidthTestAction::Delay,
                 "Agent {} should be told to delay",
                 i + 1

@@ -850,7 +850,7 @@ async fn main() -> Result<()> {
     // Initialize the logging framework (`tracing`).
     // `tracing_subscriber` is used to configure how logs are processed and displayed.
     let file_appender = tracing_appender::rolling::daily("./logs", "agent.log");
-    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     // Configure logging with proper RUST_LOG environment variable handling
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {

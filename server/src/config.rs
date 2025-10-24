@@ -192,22 +192,22 @@ impl ConfigManager {
                         || old.bandwidth_test_size_mb != current.bandwidth_test_size_mb
                     {
                         info!("Server configuration changed and reloaded");
-                        return Ok(true);
+                        Ok(true)
                     } else {
                         debug!("Server configuration unchanged");
-                        return Ok(false);
+                        Ok(false)
                     }
                 } else {
                     // This case handles the first time loading, which is technically a change.
                     info!("Server configuration loaded for first time");
-                    return Ok(true);
+                    Ok(true)
                 }
             }
             Err(e) => {
                 // If reloading fails, restore the old configuration to ensure the
                 // server continues to run with a valid, known state.
                 self.server_config = old_config;
-                return Err(e);
+                Err(e)
             }
         }
     }

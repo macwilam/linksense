@@ -690,7 +690,7 @@ mod tests {
             ).unwrap();
 
             // Insert recent ping metrics (1 day ago)
-            let recent_timestamp = current_timestamp() - (1 * 24 * 60 * 60);
+            let recent_timestamp = current_timestamp() - (24 * 60 * 60);
             conn.execute(
                 "INSERT INTO agg_metric_ping (agent_id, task_name, period_start, period_end, min_latency_ms, max_latency_ms, avg_latency_ms, packet_loss_percent, successful_pings, failed_pings, sample_count)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",

@@ -71,6 +71,7 @@ pub struct Response {
     /// The certificate information
     pub certificate_information: Option<CertificateInformation>,
     /// The raw certificate
+    #[allow(dead_code)]
     pub certificate: Option<X509>,
     /// The status of the response
     pub status: u16,
@@ -438,7 +439,8 @@ mod tests {
     const TIMEOUT: Duration = Duration::from_secs(5);
 
     fn create_test_connector() -> SslConnector {
-        let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
+        let mut builder = SslConnector::builder(SslMethod::tls())
+            .expect("Failed to create SSL connector builder");
         builder.set_verify(SslVerifyMode::NONE);
         builder.build()
     }
@@ -451,7 +453,7 @@ mod tests {
         let url = "http://info.cern.ch"; // The first website
         let result = from_string(url, Some(TIMEOUT), &connector).await;
         assert!(result.is_ok());
-        let response = result.unwrap();
+        let response = result.expect("Expected successful HTTP response");
         assert_eq!(response.status, 200);
         assert!(response.timings.tls.is_none());
         assert!(response.timings.content_download < TIMEOUT);
@@ -463,7 +465,7 @@ mod tests {
         let url = "https://www.google.com";
         let result = from_string(url, Some(TIMEOUT), &connector).await;
         assert!(result.is_ok());
-        let response = result.unwrap();
+        let response = result.expect("Expected successful HTTPS response");
         // Google might return 301/302 for redirection based on location
         assert!(response.status >= 200 && response.status < 400);
         assert!(response.certificate_information.is_some());
@@ -477,7 +479,7 @@ mod tests {
         let url = "1.1.1.1"; // This will default to https://1.1.1.1
         let result = from_string(url, Some(TIMEOUT), &connector).await;
         assert!(result.is_ok());
-        let response = result.unwrap();
+        let response = result.expect("Expected successful IP connection response");
         // Expect a redirect to the hostname
         assert!(response.status >= 300 && response.status < 400);
         assert!(response.timings.tls.is_some());
@@ -491,6 +493,9 @@ mod tests {
         let url = "http://10.255.255.1";
         let result = from_string(url, Some(Duration::from_secs(1)), &connector).await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), error::Error::Timeout(_)));
+        assert!(matches!(
+            result.expect_err("Expected timeout error"),
+            error::Error::Timeout(_)
+        ));
     }
 }

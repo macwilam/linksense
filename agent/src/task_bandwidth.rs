@@ -33,7 +33,6 @@ pub async fn execute_bandwidth_task(
 
     let client = reqwest::Client::new();
     let mut retry_count = 0;
-    let data_size_bytes;
 
     // Retry loop for requesting permission from server
     loop {
@@ -67,7 +66,7 @@ pub async fn execute_bandwidth_task(
         };
 
         let response = client
-            .post(&format!(
+            .post(format!(
                 "{}{}",
                 server_url,
                 shared::api::endpoints::BANDWIDTH_TEST
@@ -118,11 +117,6 @@ pub async fn execute_bandwidth_task(
                 continue; // Loop back to request permission again
             }
             shared::api::BandwidthTestAction::Proceed => {
-                // Got permission! Extract data size and break out of retry loop
-                data_size_bytes = test_response
-                    .data_size_bytes
-                    .ok_or_else(|| anyhow::anyhow!("Server did not provide data size"))?;
-
                 debug!(
                     "Server granted bandwidth test permission after {} attempts",
                     retry_count + 1
@@ -144,7 +138,7 @@ pub async fn execute_bandwidth_task(
     let download_start = std::time::Instant::now();
 
     let download_response = client
-        .get(&format!(
+        .get(format!(
             "{}{}",
             server_url,
             shared::api::endpoints::BANDWIDTH_DOWNLOAD

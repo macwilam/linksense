@@ -109,6 +109,7 @@ pub struct TaskScheduler {
     pub result_receiver: mpsc::Receiver<crate::tasks::TaskResult>,
     /// The sender part of the channel for task results. It's cloned and given
     /// to the `TaskExecutor`.
+    #[allow(dead_code)]
     result_sender: mpsc::Sender<crate::tasks::TaskResult>,
     /// A channel receiver for getting notifications that a task is ready to run.
     pub ready_receiver: mpsc::Receiver<String>,
@@ -133,6 +134,7 @@ pub struct TaskScheduler {
     /// Maximum time in seconds to wait for in-flight tasks during graceful shutdown
     pub graceful_shutdown_timeout_secs: u64,
     /// Channel buffer size for task results
+    #[allow(dead_code)]
     pub channel_buffer_size: usize,
     /// The last time queue cleanup was performed (as Unix timestamp)
     pub last_queue_cleanup: u64,

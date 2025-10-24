@@ -83,7 +83,7 @@ impl TaskExecutor {
         // These are reused across all TLS handshakes to avoid repeated initialization overhead
         // We create two: one with SSL verification enabled, one with it disabled
         let ssl_connector_verify = {
-            let mut builder = SslConnector::builder(SslMethod::tls())
+            let builder = SslConnector::builder(SslMethod::tls())
                 .context("Failed to create SSL connector builder with verification")?;
             // Verification is enabled by default
             builder.build()

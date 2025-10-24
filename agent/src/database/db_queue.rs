@@ -5,10 +5,7 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
-use shared::{
-    config::TaskType,
-    metrics::{AggregatedMetricData, AggregatedMetrics},
-};
+use shared::metrics::{AggregatedMetricData, AggregatedMetrics};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
@@ -48,8 +45,11 @@ pub struct QueueEntry {
     pub id: i64,
     pub metric_type: String,
     pub metric_row_id: i64,
+    #[allow(dead_code)]
     pub task_name: String,
+    #[allow(dead_code)]
     pub period_start: u64,
+    #[allow(dead_code)]
     pub period_end: u64,
     pub retry_count: i32,
 }
@@ -59,11 +59,13 @@ pub struct QueueEntry {
 pub struct QueuedMetric {
     pub queue_id: i64,
     pub metric: AggregatedMetrics,
+    #[allow(dead_code)]
     pub retry_count: i32,
 }
 
 /// Queue statistics for monitoring
 #[derive(Debug, Default, Clone)]
+#[allow(dead_code)]
 pub struct QueueStats {
     pub pending: i64,
     pub sending: i64,
@@ -354,6 +356,7 @@ pub fn cleanup_sent_queue_entries(conn: &Connection, older_than_hours: i64) -> R
 }
 
 /// Get queue statistics for monitoring
+#[allow(dead_code)]
 pub fn get_queue_stats(conn: &Connection) -> Result<QueueStats> {
     let mut stmt =
         conn.prepare("SELECT status, COUNT(*) FROM metric_send_queue GROUP BY status")?;

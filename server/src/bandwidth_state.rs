@@ -143,7 +143,6 @@ impl BandwidthTestManager {
                 .current_test
                 .as_ref()
                 .map(|(agent, start)| (agent.clone(), start.elapsed().as_secs())),
-            queue_length: state.waiting_queue.len(),
         }
     }
 
@@ -203,8 +202,6 @@ impl BandwidthTestManager {
 pub struct BandwidthTestStatus {
     /// Current running test (agent_id, elapsed_seconds)
     pub current_test: Option<(String, u64)>,
-    /// Number of agents in waiting queue
-    pub queue_length: usize,
 }
 
 #[cfg(test)]
@@ -223,7 +220,6 @@ mod tests {
 
         let status = manager.get_status().await;
         assert!(status.current_test.is_some());
-        assert_eq!(status.queue_length, 0);
     }
 
     #[tokio::test]
@@ -245,7 +241,6 @@ mod tests {
 
         let status = manager.get_status().await;
         assert!(status.current_test.is_some());
-        assert_eq!(status.queue_length, 1);
     }
 
     #[tokio::test]
@@ -268,7 +263,6 @@ mod tests {
         let status = manager.get_status().await;
         assert!(status.current_test.is_some());
         assert_eq!(status.current_test.as_ref().unwrap().0, "agent2");
-        assert_eq!(status.queue_length, 0);
     }
 
     #[tokio::test]
@@ -291,10 +285,6 @@ mod tests {
             .request_test("agent4".to_string(), 1024 * 1024)
             .await;
 
-        // Verify queue length
-        let status = manager.get_status().await;
-        assert_eq!(status.queue_length, 3);
-
         // Complete tests and verify FIFO ordering
         manager.complete_test("agent1").await;
         let status = manager.get_status().await;
@@ -316,7 +306,6 @@ mod tests {
         // Initially empty
         let status = manager.get_status().await;
         assert!(status.current_test.is_none());
-        assert_eq!(status.queue_length, 0);
 
         // With active test
         manager
@@ -327,7 +316,6 @@ mod tests {
         assert_eq!(status.current_test.as_ref().unwrap().0, "agent1");
         // Check elapsed time is very small (just started)
         assert!(status.current_test.as_ref().unwrap().1 < 2);
-        assert_eq!(status.queue_length, 0);
 
         // With queued tests
         manager
@@ -338,7 +326,6 @@ mod tests {
             .await;
         let status = manager.get_status().await;
         assert_eq!(status.current_test.as_ref().unwrap().0, "agent1");
-        assert_eq!(status.queue_length, 2);
     }
 
     #[tokio::test]
@@ -351,7 +338,6 @@ mod tests {
         // Verify status unchanged
         let status = manager.get_status().await;
         assert!(status.current_test.is_none());
-        assert_eq!(status.queue_length, 0);
     }
 
     #[tokio::test]
@@ -374,6 +360,5 @@ mod tests {
         // agent1 should still be the current test
         let status = manager.get_status().await;
         assert_eq!(status.current_test.as_ref().unwrap().0, "agent1");
-        assert_eq!(status.queue_length, 1);
     }
 }

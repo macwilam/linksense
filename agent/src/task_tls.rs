@@ -26,7 +26,7 @@ use std::{
 use openssl::{
     asn1::{Asn1Time, Asn1TimeRef},
     error::ErrorStack,
-    ssl::{SslConnector, SslMethod, SslVerifyMode},
+    ssl::SslConnector,
     x509::X509,
 };
 use tokio::{
@@ -163,10 +163,10 @@ pub async fn get_tls_timing(
         .configure()?
         .into_ssl(url.host_str().unwrap_or(""))?;
     let ssl_stream = tokio_openssl::SslStream::new(ssl, stream).map_err(|e| {
-        error::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("TLS connection failed: {}", e),
-        ))
+        error::Error::Io(std::io::Error::other(format!(
+            "TLS connection failed: {}",
+            e
+        )))
     })?;
     let mut ssl_stream = ssl_stream;
 
@@ -174,10 +174,10 @@ pub async fn get_tls_timing(
         .connect()
         .await
         .map_err(|e| {
-            error::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("TLS handshake failed: {}", e),
-            ))
+            error::Error::Io(std::io::Error::other(format!(
+                "TLS handshake failed: {}",
+                e
+            )))
         })?;
 
     let Some(raw_certificate) = ssl_stream.ssl().peer_certificate() else {
@@ -325,20 +325,24 @@ pub async fn check_tls_handshake_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openssl::ssl::{SslMethod, SslVerifyMode};
 
     #[tokio::test]
     async fn test_resolve_dns() {
-        let url = Url::parse("https://example.com").unwrap();
+        let url = Url::parse("https://example.com").expect("Failed to parse URL");
         let result = resolve_dns(&url).await;
         assert!(result.is_ok());
-        let addrs: Vec<SocketAddr> = result.unwrap().collect();
+        let addrs: Vec<SocketAddr> = result
+            .expect("Expected DNS resolution to succeed")
+            .collect();
         assert!(!addrs.is_empty());
     }
 
     #[tokio::test]
     async fn test_tls_handshake_check() {
         // Create a test connector with verification disabled
-        let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
+        let mut builder = SslConnector::builder(SslMethod::tls())
+            .expect("Failed to create SSL connector builder");
         builder.set_verify(SslVerifyMode::NONE);
         let connector = builder.build();
 
@@ -366,7 +370,8 @@ mod tests {
     #[tokio::test]
     async fn test_tls_handshake_timeout() {
         // Create a test connector with verification disabled
-        let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
+        let mut builder = SslConnector::builder(SslMethod::tls())
+            .expect("Failed to create SSL connector builder");
         builder.set_verify(SslVerifyMode::NONE);
         let connector = builder.build();
 

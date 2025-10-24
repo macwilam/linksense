@@ -96,7 +96,7 @@ The system operates on a continuous cycle:
 - Local querying capability for debugging
 
 **Aggregation Strategy**: Raw measurements are aggregated into 60-second summaries:
-- Reduces network bandwidth by 98%+
+- Reduces network bandwidth
 - Decreases server storage requirements
 - Maintains statistical accuracy (min, max, avg, stddev)
 
