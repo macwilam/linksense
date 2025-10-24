@@ -165,6 +165,21 @@ The async architecture enables impressive scalability:
 
 Real-world performance: A single agent can monitor hundreds of endpoints while using less than 50MB RAM.
 
+## 🏗️ Technical Stack
+
+LinkSense is built with performance and security as top priorities:
+
+- **Language**: Pure Rust for memory safety and zero-cost abstractions
+- **Runtime**: Tokio async runtime for efficient concurrency
+- **Memory Allocator**: [jemalloc](https://github.com/jemalloc/jemalloc) via tikv-jemallocator for superior memory management and reduced fragmentation
+- **TLS Implementation**: [rustls](https://github.com/rustls/rustls) with [AWS-LC](https://github.com/aws/aws-lc-rs) crypto provider for modern, secure TLS without OpenSSL dependencies
+- **Database**: SQLite with bundled builds for portability
+- **HTTP Client**: reqwest with rustls backend for secure communications
+
+**Why These Choices?**
+- **jemalloc**: Provides better performance for multi-threaded workloads, reduces memory fragmentation, and offers superior scalability compared to system allocators
+- **rustls + AWS-LC**: Modern TLS implementation with better security posture, no C dependencies (OpenSSL), and excellent performance from AWS's battle-tested crypto library
+
 ## 🚀 Quick Start
 
 ### Prerequisites

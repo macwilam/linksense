@@ -14,12 +14,12 @@
 //! and returns the result in a structured format.
 
 use anyhow::{Context, Result};
-use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use shared::config::{TaskConfig, TaskParams, TaskType};
 use shared::metrics::{MetricData, RawMetricData};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio_rustls::TlsConnector;
 use tracing::{debug, error};
 
 /// Represents the result of a single task execution.
@@ -55,10 +55,10 @@ pub struct TaskExecutor {
     agent_id: Option<String>,
     /// Shared HTTP client for HTTP content tasks (reused across all requests)
     http_content_client: reqwest::Client,
-    /// Shared SSL connector with verification enabled (reused across all TLS connections)
-    ssl_connector_verify: Arc<SslConnector>,
-    /// Shared SSL connector with verification disabled (reused across all TLS connections)
-    ssl_connector_no_verify: Arc<SslConnector>,
+    /// Shared TLS connector with verification enabled (reused across all TLS connections)
+    tls_connector_verify: TlsConnector,
+    /// Shared TLS connector with verification disabled (reused across all TLS connections)
+    tls_connector_no_verify: TlsConnector,
 }
 
 impl TaskExecutor {
@@ -79,22 +79,14 @@ impl TaskExecutor {
             .build()
             .context("Failed to create shared HTTP client for content tasks")?;
 
-        // Create shared SSL connectors for TLS connections
+        // Create shared TLS connectors for TLS connections
         // These are reused across all TLS handshakes to avoid repeated initialization overhead
-        // We create two: one with SSL verification enabled, one with it disabled
-        let ssl_connector_verify = {
-            let builder = SslConnector::builder(SslMethod::tls())
-                .context("Failed to create SSL connector builder with verification")?;
-            // Verification is enabled by default
-            builder.build()
-        };
+        // We create two: one with TLS verification enabled, one with it disabled
+        let tls_connector_verify = crate::task_tls::create_tls_connector_with_verification()
+            .context("Failed to create TLS connector with verification")?;
 
-        let ssl_connector_no_verify = {
-            let mut builder = SslConnector::builder(SslMethod::tls())
-                .context("Failed to create SSL connector builder without verification")?;
-            builder.set_verify(SslVerifyMode::NONE);
-            builder.build()
-        };
+        let tls_connector_no_verify = crate::task_tls::create_tls_connector_without_verification()
+            .context("Failed to create TLS connector without verification")?;
 
         Ok(Self {
             result_sender: Arc::new(result_sender),
@@ -102,8 +94,8 @@ impl TaskExecutor {
             api_key,
             agent_id,
             http_content_client,
-            ssl_connector_verify: Arc::new(ssl_connector_verify),
-            ssl_connector_no_verify: Arc::new(ssl_connector_no_verify),
+            tls_connector_verify,
+            tls_connector_no_verify,
         })
     }
 
@@ -206,11 +198,11 @@ impl TaskExecutor {
                 params.timeout_seconds as u64,
             ));
 
-            // Select the appropriate shared SSL connector based on verify_ssl setting
+            // Select the appropriate shared TLS connector based on verify_ssl setting
             let connector = if params.verify_ssl {
-                &self.ssl_connector_verify
+                &self.tls_connector_verify
             } else {
-                &self.ssl_connector_no_verify
+                &self.tls_connector_no_verify
             };
 
             let timing_result =
@@ -325,11 +317,11 @@ impl TaskExecutor {
                 task_config.get_effective_timeout() as u64
             ));
 
-            // Select the appropriate shared SSL connector based on verify_ssl setting
+            // Select the appropriate shared TLS connector based on verify_ssl setting
             let connector = if params.verify_ssl {
-                &self.ssl_connector_verify
+                &self.tls_connector_verify
             } else {
-                &self.ssl_connector_no_verify
+                &self.tls_connector_no_verify
             };
 
             let result =

@@ -63,7 +63,7 @@ async fn execute_ping_with_resolution(task_config: &TaskConfig, params: &PingPar
 
                     // Shuffle IPs for better load balancing across multiple runs
                     use rand::seq::SliceRandom;
-                    let mut rng = rand::thread_rng();
+                    let mut rng = rand::rng();
                     ips.shuffle(&mut rng);
 
                     debug!(

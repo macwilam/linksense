@@ -9,6 +9,10 @@
 // - Handling command-line arguments.
 // - Managing the application's lifecycle, including graceful shutdown.
 
+// Use jemalloc as the global allocator for better performance
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::Parser;

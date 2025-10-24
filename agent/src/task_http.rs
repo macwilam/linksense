@@ -20,9 +20,8 @@
 
 use std::time::Duration;
 
-use openssl::ssl::SslConnector;
-use openssl::x509::X509;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio_rustls::TlsConnector;
 use url::Url;
 
 // Import connection primitives from appropriate modules
@@ -70,9 +69,9 @@ pub struct Response {
     pub timings: ResponseTimings,
     /// The certificate information
     pub certificate_information: Option<CertificateInformation>,
-    /// The raw certificate
+    /// The raw certificate (DER-encoded)
     #[allow(dead_code)]
-    pub certificate: Option<X509>,
+    pub certificate: Option<Vec<u8>>,
     /// The status of the response
     pub status: u16,
 }
@@ -120,7 +119,7 @@ async fn get_content_download_timing(
     stream: Box<dyn AsyncReadWrite + Send>,
     first_byte: u8,
 ) -> Result<(Duration, u16), error::Error> {
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::with_capacity(1500, stream);
 
     // Security limits
     const MAX_HEADER_SIZE: usize = 64 * 1024; // 64KB for all headers
@@ -354,7 +353,7 @@ async fn get_content_download_timing(
 ///
 /// This function will return an error if the URL is invalid or the URL is not reachable.
 /// It could also error under any scenario in the [`error::Error`] enum.
-pub async fn from_url(url: &Url, connector: &SslConnector) -> Result<Response, error::Error> {
+pub async fn from_url(url: &Url, connector: &TlsConnector) -> Result<Response, error::Error> {
     let mut socket_addrs = resolve_dns(url).await?;
     let Some(url_ip) = socket_addrs.next() else {
         return Err(error::Error::Io(std::io::Error::new(
@@ -363,16 +362,16 @@ pub async fn from_url(url: &Url, connector: &SslConnector) -> Result<Response, e
         )));
     };
 
-    let mut ssl_certificate = None;
-    let mut ssl_certificate_information = None;
+    let mut tls_certificate = None;
+    let mut tls_certificate_information = None;
     let mut tls_timing = None;
 
     let (tcp_timing, mut stream) = if url.scheme() == "https" {
         let (tcp_timing, tcp_stream) = get_tcp_timing(&url_ip).await.map_err(error::Error::Io)?;
         let timing_response = get_tls_timing(url, tcp_stream, connector).await?;
         tls_timing = Some(timing_response.timing);
-        ssl_certificate = timing_response.certificate;
-        ssl_certificate_information = timing_response.certificate_information;
+        tls_certificate = timing_response.certificate;
+        tls_certificate_information = timing_response.certificate_information;
         (tcp_timing, timing_response.stream)
     } else {
         let (tcp_timing, tcp_stream) = get_tcp_timing(&url_ip).await.map_err(error::Error::Io)?;
@@ -393,8 +392,8 @@ pub async fn from_url(url: &Url, connector: &SslConnector) -> Result<Response, e
 
     let response = Response {
         timings: ResponseTimings::new(tcp_timing, tls_timing, ttfb_timing, content_download_timing),
-        certificate_information: ssl_certificate_information,
-        certificate: ssl_certificate,
+        certificate_information: tls_certificate_information,
+        certificate: tls_certificate,
         status,
     };
 
@@ -411,7 +410,7 @@ pub async fn from_url(url: &Url, connector: &SslConnector) -> Result<Response, e
 pub async fn from_string(
     url: &str,
     timeout: Option<Duration>,
-    connector: &SslConnector,
+    connector: &TlsConnector,
 ) -> Result<Response, error::Error> {
     let input = if !url.starts_with("http://") && !url.starts_with("https://") {
         format!("https://{url}") // Default to https for safety
@@ -435,19 +434,13 @@ pub async fn from_string(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openssl::ssl::{SslMethod, SslVerifyMode};
+    use crate::task_tls::create_tls_connector_without_verification;
     const TIMEOUT: Duration = Duration::from_secs(5);
-
-    fn create_test_connector() -> SslConnector {
-        let mut builder = SslConnector::builder(SslMethod::tls())
-            .expect("Failed to create SSL connector builder");
-        builder.set_verify(SslVerifyMode::NONE);
-        builder.build()
-    }
 
     #[tokio::test]
     async fn test_non_tls_connection() {
-        let connector = create_test_connector();
+        let connector =
+            create_tls_connector_without_verification().expect("Failed to create TLS connector");
         // Note: neverssl.com sometimes redirects to http.
         // We will use a more stable http-only target.
         let url = "http://info.cern.ch"; // The first website
@@ -461,7 +454,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_popular_tls_connection() {
-        let connector = create_test_connector();
+        let connector =
+            create_tls_connector_without_verification().expect("Failed to create TLS connector");
         let url = "https://www.google.com";
         let result = from_string(url, Some(TIMEOUT), &connector).await;
         assert!(result.is_ok());
@@ -475,7 +469,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_ip() {
-        let connector = create_test_connector();
+        let connector =
+            create_tls_connector_without_verification().expect("Failed to create TLS connector");
         let url = "1.1.1.1"; // This will default to https://1.1.1.1
         let result = from_string(url, Some(TIMEOUT), &connector).await;
         assert!(result.is_ok());
@@ -488,7 +483,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout() {
-        let connector = create_test_connector();
+        let connector =
+            create_tls_connector_without_verification().expect("Failed to create TLS connector");
         // Use a non-routable address to force a timeout
         let url = "http://10.255.255.1";
         let result = from_string(url, Some(Duration::from_secs(1)), &connector).await;

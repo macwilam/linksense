@@ -9,6 +9,10 @@
 // - Starting the web server and API endpoints.
 // - Handling graceful shutdown.
 
+// Use jemalloc as the global allocator for better performance
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;

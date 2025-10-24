@@ -19,20 +19,17 @@
 use std::{
     fmt::Debug,
     net::SocketAddr,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::Arc,
+    time::{Duration, SystemTime},
     vec::IntoIter,
 };
 
-use openssl::{
-    asn1::{Asn1Time, Asn1TimeRef},
-    error::ErrorStack,
-    ssl::SslConnector,
-    x509::X509,
-};
+use rustls::pki_types::{CertificateDer, ServerName};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
 };
+use tokio_rustls::TlsConnector;
 use tracing::debug;
 use url::Url;
 
@@ -41,7 +38,7 @@ use crate::task_tcp;
 /// `AsyncReadWrite` trait
 ///
 /// This trait is implemented for types that implement the `AsyncRead` and `AsyncWrite` traits.
-/// This is mainly used to make socket streams compatible with both [`tokio::net::TcpStream`] and [`tokio_openssl::SslStream`].
+/// This is mainly used to make socket streams compatible with both [`tokio::net::TcpStream`] and [`tokio_rustls::client::TlsStream`].
 pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Debug + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Debug + Unpin + Send> AsyncReadWrite for T {}
 
@@ -59,15 +56,12 @@ pub mod error {
         #[error("io error: {0}")]
         /// IO error, derived from [`std::io::Error`]
         Io(#[from] std::io::Error),
-        #[error("ssl error: {0}")]
-        /// SSL error, derived from [`openssl::error::ErrorStack`]
-        Ssl(#[from] openssl::error::ErrorStack),
-        #[error("ssl handshake error: {0}")]
-        /// SSL handshake error, derived from [`openssl::ssl::HandshakeError`]
-        SslHandshake(#[from] openssl::ssl::HandshakeError<tokio::net::TcpStream>),
-        #[error("ssl certificate not found")]
-        /// SSL certificate not found
-        SslCertificateNotFound,
+        #[error("tls error: {0}")]
+        /// TLS error from rustls
+        Tls(String),
+        #[error("invalid DNS name: {0}")]
+        /// Invalid DNS name error
+        InvalidDnsName(String),
         #[error("system time error: {0}")]
         /// System time error, derived from [`std::time::SystemTimeError`]
         SystemTime(#[from] std::time::SystemTimeError),
@@ -97,15 +91,22 @@ pub struct TlsTimingResponse {
     pub stream: Box<dyn AsyncReadWrite + Send>,
     /// Certificate information if available
     pub certificate_information: Option<CertificateInformation>,
-    /// Raw certificate if available
-    pub certificate: Option<X509>,
+    /// Raw certificate if available (DER-encoded)
+    pub certificate: Option<Vec<u8>>,
 }
 
-/// Convert OpenSSL ASN.1 time format to Rust SystemTime
-fn asn1_time_to_system_time(time: &Asn1TimeRef) -> Result<SystemTime, ErrorStack> {
-    let unix_time = Asn1Time::from_unix(0)?.diff(time)?;
-    Ok(SystemTime::UNIX_EPOCH
-        + Duration::from_secs((unix_time.days as u64) * 86400 + unix_time.secs as u64))
+/// Extract certificate expiry time from DER-encoded certificate
+fn extract_cert_expiry(cert_der: &CertificateDer) -> Result<SystemTime, error::Error> {
+    // Use x509-parser to extract certificate expiry information
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    let (_, parsed_cert) = X509Certificate::from_der(cert_der.as_ref())
+        .map_err(|e| error::Error::Tls(format!("Failed to parse certificate DER: {}", e)))?;
+
+    let not_after = parsed_cert.validity().not_after;
+    let timestamp = not_after.timestamp();
+
+    Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp as u64))
 }
 
 /// Resolve URL hostname to socket addresses for connection
@@ -146,7 +147,7 @@ pub async fn resolve_dns(url: &Url) -> Result<IntoIter<SocketAddr>, error::Error
 /// # Arguments
 /// * `url` - The URL being connected to (used for SNI)
 /// * `stream` - The established TCP stream
-/// * `connector` - Shared SSL connector to use for the connection
+/// * `connector` - Shared TLS connector to use for the connection
 ///
 /// # Returns
 /// TLS timing response with duration, stream, and certificate info
@@ -156,53 +157,55 @@ pub async fn resolve_dns(url: &Url) -> Result<IntoIter<SocketAddr>, error::Error
 pub async fn get_tls_timing(
     url: &Url,
     stream: TcpStream,
-    connector: &SslConnector,
+    connector: &TlsConnector,
 ) -> Result<TlsTimingResponse, error::Error> {
     let now = std::time::Instant::now();
-    let ssl = connector
-        .configure()?
-        .into_ssl(url.host_str().unwrap_or(""))?;
-    let ssl_stream = tokio_openssl::SslStream::new(ssl, stream).map_err(|e| {
+
+    let host = url.host_str().unwrap_or("");
+    let server_name = ServerName::try_from(host)
+        .map_err(|e| error::Error::InvalidDnsName(format!("Invalid DNS name '{}': {}", host, e)))?
+        .to_owned();
+
+    let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
         error::Error::Io(std::io::Error::other(format!(
-            "TLS connection failed: {}",
+            "TLS handshake failed: {}",
             e
         )))
     })?;
-    let mut ssl_stream = ssl_stream;
 
-    std::pin::Pin::new(&mut ssl_stream)
-        .connect()
-        .await
-        .map_err(|e| {
-            error::Error::Io(std::io::Error::other(format!(
-                "TLS handshake failed: {}",
-                e
-            )))
-        })?;
-
-    let Some(raw_certificate) = ssl_stream.ssl().peer_certificate() else {
-        return Err(error::Error::SslCertificateNotFound);
-    };
     let time_elapsed = now.elapsed();
 
-    let current_asn1_time =
-        Asn1Time::from_unix(match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_secs() as i64,
-            Err(e) => return Err(error::Error::SystemTime(e)),
-        })?;
+    // Extract certificate information from the TLS connection
+    let (_, server_connection) = tls_stream.get_ref();
+    let peer_certificates = server_connection.peer_certificates();
 
-    // Only extract the essential certificate information needed for validation
-    // This avoids unnecessary allocations from parsing unused fields
-    let certificate_information = CertificateInformation {
-        expires_at: asn1_time_to_system_time(raw_certificate.not_after())?,
-        is_active: raw_certificate.not_after() > current_asn1_time,
+    let (certificate_information, raw_certificate) = if let Some(certs) = peer_certificates {
+        if let Some(cert) = certs.first() {
+            // Extract expiry information
+            let expires_at = extract_cert_expiry(cert)?;
+            let is_active = expires_at > SystemTime::now();
+
+            let cert_info = CertificateInformation {
+                expires_at,
+                is_active,
+            };
+
+            // Store the raw DER-encoded certificate
+            let raw_cert = cert.as_ref().to_vec();
+
+            (Some(cert_info), Some(raw_cert))
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
     };
 
     Ok(TlsTimingResponse {
         timing: time_elapsed,
-        stream: Box::new(ssl_stream),
-        certificate_information: Some(certificate_information),
-        certificate: Some(raw_certificate),
+        stream: Box::new(tls_stream),
+        certificate_information,
+        certificate: raw_certificate,
     })
 }
 
@@ -227,7 +230,7 @@ pub struct TlsCheckResult {
 ///
 /// # Arguments
 /// * `host` - Target host:port (e.g., "example.com:443")
-/// * `connector` - Shared SSL connector to use for the connection
+/// * `connector` - Shared TLS connector to use for the connection
 ///
 /// # Returns
 /// Result containing TLS check data or error
@@ -236,7 +239,7 @@ pub struct TlsCheckResult {
 /// Returns error if DNS resolution, TCP connection, or TLS handshake fails
 pub async fn check_tls_handshake(
     host: &str,
-    connector: &SslConnector,
+    connector: &TlsConnector,
 ) -> Result<TlsCheckResult, error::Error> {
     debug!("Performing TLS handshake check on: {}", host);
 
@@ -287,6 +290,10 @@ pub async fn check_tls_handshake(
             (None, None)
         };
 
+    // Explicitly close the TLS connection now that we have all the timing and certificate data
+    // This ensures proper cleanup of the TLS session and underlying TCP connection
+    drop(tls_response.stream);
+
     Ok(TlsCheckResult {
         tcp_timing,
         tls_timing: Some(tls_response.timing),
@@ -302,7 +309,7 @@ pub async fn check_tls_handshake(
 /// # Arguments
 /// * `host` - Target host:port (e.g., "example.com:443")
 /// * `timeout` - Optional timeout duration
-/// * `connector` - Shared SSL connector to use for the connection
+/// * `connector` - Shared TLS connector to use for the connection
 ///
 /// # Returns
 /// Result containing TLS check data or error
@@ -312,7 +319,7 @@ pub async fn check_tls_handshake(
 pub async fn check_tls_handshake_with_timeout(
     host: &str,
     timeout: Option<Duration>,
-    connector: &SslConnector,
+    connector: &TlsConnector,
 ) -> Result<TlsCheckResult, error::Error> {
     match timeout {
         Some(duration) => tokio::time::timeout(duration, check_tls_handshake(host, connector))
@@ -322,10 +329,111 @@ pub async fn check_tls_handshake_with_timeout(
     }
 }
 
+/// Create a TLS connector with certificate verification enabled
+///
+/// # Returns
+/// Configured TLS connector with system root certificates
+pub fn create_tls_connector_with_verification() -> Result<TlsConnector, error::Error> {
+    // Install the default crypto provider if not already installed
+    // This is safe to call multiple times - it will only install once
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    let mut root_store = rustls::RootCertStore::empty();
+
+    // Load native system certificates
+    // We tolerate individual certificate loading errors as long as we get at least some valid certs
+    let certs = rustls_native_certs::load_native_certs();
+
+    // Only fail if we have errors AND no valid certificates were loaded
+    if !certs.errors.is_empty() && certs.certs.is_empty() {
+        return Err(error::Error::Tls(format!(
+            "Failed to load any native certs: {} errors",
+            certs.errors.len()
+        )));
+    }
+
+    for cert in certs.certs {
+        // Ignore individual certificate parsing errors - as long as we have some valid certs, continue
+        let _ = root_store.add(cert);
+    }
+
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    Ok(TlsConnector::from(Arc::new(config)))
+}
+
+/// Create a TLS connector with certificate verification disabled
+///
+/// # Returns
+/// Configured TLS connector that accepts any certificate
+pub fn create_tls_connector_without_verification() -> Result<TlsConnector, error::Error> {
+    // Install the default crypto provider if not already installed
+    // This is safe to call multiple times - it will only install once
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    let config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+        .with_no_client_auth();
+
+    Ok(TlsConnector::from(Arc::new(config)))
+}
+
+/// Certificate verifier that accepts all certificates (for testing/monitoring)
+#[derive(Debug)]
+struct NoCertificateVerification;
+
+impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openssl::ssl::{SslMethod, SslVerifyMode};
 
     #[tokio::test]
     async fn test_resolve_dns() {
@@ -340,11 +448,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_handshake_check() {
-        // Create a test connector with verification disabled
-        let mut builder = SslConnector::builder(SslMethod::tls())
-            .expect("Failed to create SSL connector builder");
-        builder.set_verify(SslVerifyMode::NONE);
-        let connector = builder.build();
+        // Create a test connector without verification for testing
+        let connector =
+            create_tls_connector_without_verification().expect("Failed to create TLS connector");
 
         // Test with a well-known site
         let result = check_tls_handshake_with_timeout(
@@ -369,11 +475,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_handshake_timeout() {
-        // Create a test connector with verification disabled
-        let mut builder = SslConnector::builder(SslMethod::tls())
-            .expect("Failed to create SSL connector builder");
-        builder.set_verify(SslVerifyMode::NONE);
-        let connector = builder.build();
+        // Create a test connector
+        let connector =
+            create_tls_connector_without_verification().expect("Failed to create TLS connector");
 
         // Use a non-routable IP to test timeout
         let result = check_tls_handshake_with_timeout(
