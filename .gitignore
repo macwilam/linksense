@@ -11,7 +11,9 @@ debug
 target
 logs
 data
+config
 **/logs
+**/config
 **/data
 **/target
 **/build
