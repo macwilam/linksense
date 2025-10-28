@@ -175,3 +175,28 @@ pub fn default_channel_buffer_size() -> usize {
 pub fn default_wal_checkpoint_interval() -> u64 {
     60
 }
+
+/// Default HTTP client refresh interval (3600 seconds / 1 hour)
+pub fn default_http_client_refresh_interval() -> u64 {
+    3600
+}
+
+/// Default agent health monitoring enabled flag
+pub fn default_monitor_agents_health() -> bool {
+    false
+}
+
+/// Default health check interval (300 seconds / 5 minutes)
+pub fn default_health_check_interval() -> u64 {
+    300
+}
+
+/// Default health check success ratio threshold (0.9 = 90%)
+pub fn default_health_check_threshold() -> f64 {
+    0.9
+}
+
+/// Default health check data retention (30 days)
+pub fn default_health_check_retention_days() -> u32 {
+    30
+}

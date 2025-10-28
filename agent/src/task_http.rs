@@ -119,7 +119,7 @@ async fn get_content_download_timing(
     stream: Box<dyn AsyncReadWrite + Send>,
     first_byte: u8,
 ) -> Result<(Duration, u16), error::Error> {
-    let mut reader = BufReader::with_capacity(1500, stream);
+    let mut reader = BufReader::with_capacity(65536, stream);
 
     // Security limits
     const MAX_HEADER_SIZE: usize = 64 * 1024; // 64KB for all headers

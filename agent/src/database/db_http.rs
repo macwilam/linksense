@@ -226,7 +226,14 @@ pub(super) fn store_aggregated_metric(
     metrics: &AggregatedMetrics,
     http_data: &AggregatedHttpMetric,
 ) -> Result<i64> {
-    let status_code_json = serde_json::to_string(&http_data.status_code_distribution)?;
+    // Convert HashMap to Vec of tuples for proper JSON serialization
+    // JSON only supports string keys, so we serialize as array of [code, count] pairs
+    let status_code_vec: Vec<(u16, u32)> = http_data
+        .status_code_distribution
+        .iter()
+        .map(|(&k, &v)| (k, v))
+        .collect();
+    let status_code_json = serde_json::to_string(&status_code_vec)?;
     conn.execute(
         r#"
         INSERT OR REPLACE INTO agg_metric_http
@@ -273,8 +280,10 @@ pub(super) fn load_aggregated_metric(
 
     let result = stmt.query_row(params![row_id], |row| {
         let status_code_json: String = row.get(13)?;
-        let status_code_distribution: HashMap<u16, u32> =
+        // Deserialize from Vec of tuples back to HashMap
+        let status_code_vec: Vec<(u16, u32)> =
             serde_json::from_str(&status_code_json).unwrap_or_default();
+        let status_code_distribution: HashMap<u16, u32> = status_code_vec.into_iter().collect();
 
         Ok(AggregatedMetrics {
             task_name: row.get(0)?,

@@ -50,7 +50,7 @@ rand = "0.9.2"
 futures-util = "0.3.30"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.5"
 edition = "2021"
 license = "MIT License"
 authors = ["Maciej Wilamowski - Sycope"]

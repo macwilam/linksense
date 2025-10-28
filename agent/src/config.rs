@@ -503,6 +503,7 @@ mod tests {
             database_busy_timeout_seconds: 5,
             graceful_shutdown_timeout_seconds: 30,
             channel_buffer_size: 1000,
+            http_client_refresh_interval_seconds: 3600,
         };
 
         let tasks_config = TasksConfig {

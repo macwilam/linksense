@@ -72,6 +72,9 @@ pub struct AgentConfig {
     /// Result channel capacity for task results (default: 1000)
     #[serde(default = "default_channel_buffer_size")]
     pub channel_buffer_size: usize,
+    /// Interval in seconds for refreshing HTTP clients and TLS connectors (default: 3600 = 1 hour)
+    #[serde(default = "default_http_client_refresh_interval")]
+    pub http_client_refresh_interval_seconds: u64,
 }
 
 /// Task configuration loaded from tasks.toml
@@ -538,6 +541,20 @@ pub struct ServerConfig {
     /// WAL checkpoint interval in seconds (default: 60)
     #[serde(default = "default_wal_checkpoint_interval")]
     pub wal_checkpoint_interval_seconds: u64,
+
+    // Agent health monitoring
+    /// Enable periodic agent health monitoring (default: false)
+    #[serde(default = "default_monitor_agents_health")]
+    pub monitor_agents_health: bool,
+    /// Health check interval in seconds (default: 300 = 5 minutes)
+    #[serde(default = "default_health_check_interval")]
+    pub health_check_interval_seconds: u64,
+    /// Success ratio threshold for marking agents as problematic (default: 0.9 = 90%)
+    #[serde(default = "default_health_check_threshold")]
+    pub health_check_success_ratio_threshold: f64,
+    /// Health check data retention in days (default: 30)
+    #[serde(default = "default_health_check_retention_days")]
+    pub health_check_retention_days: u32,
 }
 
 impl AgentConfig {
@@ -964,6 +981,30 @@ impl ServerConfig {
             .into());
         }
 
+        // Validate health monitoring settings
+        if self.health_check_interval_seconds == 0 {
+            return Err(crate::MonitoringError::Validation(
+                "health_check_interval_seconds must be greater than 0".to_string(),
+            )
+            .into());
+        }
+
+        if self.health_check_success_ratio_threshold < 0.0
+            || self.health_check_success_ratio_threshold > 1.0
+        {
+            return Err(crate::MonitoringError::Validation(
+                "health_check_success_ratio_threshold must be between 0.0 and 1.0".to_string(),
+            )
+            .into());
+        }
+
+        if self.health_check_retention_days == 0 {
+            return Err(crate::MonitoringError::Validation(
+                "health_check_retention_days must be greater than 0".to_string(),
+            )
+            .into());
+        }
+
         Ok(())
     }
 }
@@ -993,6 +1034,7 @@ mod tests {
             database_busy_timeout_seconds: 5,
             graceful_shutdown_timeout_seconds: 30,
             channel_buffer_size: 1000,
+            http_client_refresh_interval_seconds: 3600,
         };
 
         assert!(config.validate().is_ok());
@@ -1336,6 +1378,7 @@ timeout_seconds = 5
             database_busy_timeout_seconds: 5,
             graceful_shutdown_timeout_seconds: 30,
             channel_buffer_size: 1000,
+            http_client_refresh_interval_seconds: 3600,
         };
 
         let toml_str = toml::to_string(&config).unwrap();

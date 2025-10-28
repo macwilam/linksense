@@ -9,6 +9,7 @@
 // powerful database like PostgreSQL.
 
 // Task-specific database modules
+pub mod db_agent_health;
 mod db_bandwidth;
 mod db_dns;
 mod db_http;
@@ -95,6 +96,9 @@ impl ServerDatabase {
         #[cfg(feature = "sql-tasks")]
         db_sql::create_table(conn)?;
 
+        // Create agent health checks table
+        db_agent_health::create_table(conn)?;
+
         // The `config_errors` table is used to log any time an agent reports
         // a problem with its configuration. This is useful for debugging.
         conn.execute(
@@ -136,7 +140,7 @@ impl ServerDatabase {
     }
 
     /// Lazily gets a mutable reference to the database connection, creating it if needed.
-    fn get_connection(&mut self) -> Result<&mut Connection> {
+    pub fn get_connection(&mut self) -> Result<&mut Connection> {
         if self.connection.is_none() {
             let conn = Connection::open(&self.db_path)
                 .with_context(|| format!("Failed to open database: {}", self.db_path.display()))?;
@@ -464,32 +468,35 @@ impl ServerDatabase {
     pub async fn get_stats(&mut self) -> Result<ServerDatabaseStats> {
         let conn = self.get_connection()?;
 
-        let agent_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
+        // Use a read transaction to ensure consistent snapshot across all queries
+        // This is critical in WAL mode to prevent inconsistent counts
+        let tx = conn.transaction()?;
+
+        let agent_count: i64 = tx.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
 
         // Count task-specific metrics
         let agg_ping_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agg_metric_ping", [], |row| row.get(0))?;
+            tx.query_row("SELECT COUNT(*) FROM agg_metric_ping", [], |row| row.get(0))?;
         let agg_tcp_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agg_metric_tcp", [], |row| row.get(0))?;
+            tx.query_row("SELECT COUNT(*) FROM agg_metric_tcp", [], |row| row.get(0))?;
         let agg_http_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agg_metric_http", [], |row| row.get(0))?;
+            tx.query_row("SELECT COUNT(*) FROM agg_metric_http", [], |row| row.get(0))?;
         let agg_tls_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agg_metric_tls", [], |row| row.get(0))?;
+            tx.query_row("SELECT COUNT(*) FROM agg_metric_tls", [], |row| row.get(0))?;
         let agg_http_content_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agg_metric_http_content", [], |row| {
+            tx.query_row("SELECT COUNT(*) FROM agg_metric_http_content", [], |row| {
                 row.get(0)
             })?;
         let agg_dns_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agg_metric_dns", [], |row| row.get(0))?;
+            tx.query_row("SELECT COUNT(*) FROM agg_metric_dns", [], |row| row.get(0))?;
         let agg_bandwidth_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agg_metric_bandwidth", [], |row| {
+            tx.query_row("SELECT COUNT(*) FROM agg_metric_bandwidth", [], |row| {
                 row.get(0)
             })?;
 
         #[cfg(feature = "sql-tasks")]
         let agg_sql_query_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM agg_metric_sql_query", [], |row| {
+            tx.query_row("SELECT COUNT(*) FROM agg_metric_sql_query", [], |row| {
                 row.get(0)
             })?;
         #[cfg(not(feature = "sql-tasks"))]
@@ -505,7 +512,10 @@ impl ServerDatabase {
             + agg_sql_query_count;
 
         let config_errors_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM config_errors", [], |row| row.get(0))?;
+            tx.query_row("SELECT COUNT(*) FROM config_errors", [], |row| row.get(0))?;
+
+        // Commit the read transaction (releases locks)
+        tx.commit()?;
 
         let db_size = std::fs::metadata(&self.db_path)
             .map(|m| m.len())

@@ -743,6 +743,18 @@ impl TaskScheduler {
 
         Ok(())
     }
+
+    /// Refreshes the HTTP clients and TLS connectors in the task executor
+    ///
+    /// This method calls refresh_clients() on the task executor to drop and recreate
+    /// HTTP clients and TLS connectors. This helps prevent memory leaks and ensures
+    /// clean state for HTTP/TLS operations.
+    ///
+    /// # Returns
+    /// `Ok(())` on successful refresh, error if client/connector creation fails
+    pub fn refresh_http_clients(&mut self) -> Result<()> {
+        self.task_executor.refresh_clients()
+    }
 }
 
 // Re-exporting `TaskResult` to make it accessible to other modules through the scheduler.

@@ -91,6 +91,8 @@ pub struct Agent {
     last_metrics_send: u64,
     /// The last time data cleanup was performed (as Unix timestamp)
     last_data_cleanup: u64,
+    /// The last time HTTP clients were refreshed (as Unix timestamp)
+    last_client_refresh: u64,
 }
 
 impl Agent {
@@ -199,6 +201,7 @@ impl Agent {
             shutdown_tx: Some(shutdown_tx),
             last_metrics_send: 0,
             last_data_cleanup: 0,
+            last_client_refresh: 0,
         })
     }
 
@@ -254,6 +257,7 @@ impl Agent {
 
             self.send_metrics_if_needed(&http_client).await?;
             self.cleanup_data_if_needed().await?;
+            self.refresh_clients_if_needed().await?;
 
             // Main event selection - only task execution events
             if let Some(scheduler) = self.task_scheduler.as_mut() {
@@ -488,6 +492,11 @@ impl Agent {
         Ok(())
     }
 
+    /// Upload local configuration to server (instance method)
+    async fn upload_config_to_server(&self) -> Result<()> {
+        Self::upload_config_to_server_static(&self.config_manager).await
+    }
+
     /// Sends queued metrics to server if enough time has passed.
     ///
     /// Checks if the configured send interval has elapsed since the last send.
@@ -702,7 +711,16 @@ impl Agent {
                     warn!("No scheduler to reload");
                 }
             } else {
+                // Server doesn't have a config for us - upload our config
                 warn!("Server indicated config is stale but did not provide new config");
+                info!("Uploading local configuration to server");
+
+                if let Err(e) = self.upload_config_to_server().await {
+                    error!("Failed to upload configuration to server: {}", e);
+                    return Err(e);
+                }
+
+                info!("Successfully uploaded configuration to server");
             }
         } else {
             debug!("Config is up to date according to server");
@@ -749,6 +767,46 @@ impl Agent {
             }
 
             self.last_data_cleanup = current_time;
+        }
+
+        Ok(())
+    }
+
+    /// Refreshes HTTP clients and TLS connectors if enough time has passed.
+    ///
+    /// Checks if the configured refresh interval has elapsed since the last refresh.
+    /// If so, calls the scheduler to refresh the task executor's HTTP clients and
+    /// TLS connectors. This helps prevent memory leaks and ensures clean state.
+    ///
+    /// # Returns
+    /// `Ok(())` on success or if no refresh needed, error if refresh fails
+    async fn refresh_clients_if_needed(&mut self) -> Result<()> {
+        let agent_config = self
+            .config_manager
+            .agent_config
+            .as_ref()
+            .expect("Agent configuration not loaded");
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Only refresh if the configured interval has passed
+        if current_time
+            >= self.last_client_refresh + agent_config.http_client_refresh_interval_seconds
+        {
+            info!("Refreshing HTTP clients and TLS connectors");
+
+            if let Some(scheduler) = self.task_scheduler.as_mut() {
+                if let Err(e) = scheduler.refresh_http_clients() {
+                    error!("Failed to refresh HTTP clients: {}", e);
+                } else {
+                    info!("HTTP clients and TLS connectors refreshed successfully");
+                }
+            }
+
+            self.last_client_refresh = current_time;
         }
 
         Ok(())

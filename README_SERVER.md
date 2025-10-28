@@ -89,6 +89,10 @@ rate_limit_max_requests = 100
 | `rate_limit_enabled` | No | `true` | Enable rate limiting per agent |
 | `rate_limit_window_seconds` | No | `60` | Rate limit time window |
 | `rate_limit_max_requests` | No | `100` | Max requests per agent per window |
+| `monitor_agents_health` | No | `false` | Enable periodic agent health monitoring |
+| `health_check_interval_seconds` | No | `300` | Health check interval (5 minutes) |
+| `health_check_success_ratio_threshold` | No | `0.9` | Threshold for marking agents problematic (0.9 = 90%) |
+| `health_check_retention_days` | No | `30` | Days to retain health check history |
 
 ### Agent Configuration Directory Structure
 
@@ -884,9 +888,142 @@ du -sh /var/lib/linksense/
 lsof -p $(pgrep -f "server.*toml") | wc -l
 ```
 
-### Health Monitoring
+### Agent Health Monitoring
 
-Implement external health checks:
+The server includes built-in agent health monitoring to detect problematic agents automatically.
+
+#### Enabling Health Monitoring
+
+Add to `server.toml`:
+
+```toml
+# Agent health monitoring
+monitor_agents_health = true                    # Enable health checks
+health_check_interval_seconds = 300             # Check every 5 minutes
+health_check_success_ratio_threshold = 0.9      # 90% threshold
+health_check_retention_days = 30                # Retain history
+```
+
+#### How It Works
+
+The health monitor periodically:
+1. **Calculates expected metrics** - Based on each agent's task configuration and schedules
+2. **Counts received metrics** - Queries database for actual metrics in the check period
+3. **Computes success ratio** - `received_entries / expected_entries`
+4. **Identifies problems** - Agents with ratio < threshold are marked problematic
+5. **Exports report** - Writes problematic agents to `./data/problematic_agents.txt`
+
+#### Health Metrics
+
+Each health check records:
+- `seconds_since_last_push` - Time since agent's last metric submission
+- `expected_entries` - Calculated from task schedules × check period
+- `received_entries` - Actual entries in database during period
+- `success_ratio` - Percentage of expected metrics received (1.0 if expected=0)
+- `is_problematic` - Flag when ratio < configured threshold
+
+#### Example Report
+
+When agents are having issues, the report shows:
+
+```text
+Agent Health Report - 2025-10-26 12:00:00 UTC
+============================================
+
+agent_id: prod-agent-01
+  Last Push: 3600 seconds ago
+  Expected Entries: 100
+  Received Entries: 45
+  Success Ratio: 0.45
+  Status: PROBLEMATIC
+
+agent_id: prod-agent-03
+  Last Push: 7200 seconds ago
+  Expected Entries: 120
+  Received Entries: 80
+  Success Ratio: 0.67
+  Status: PROBLEMATIC
+
+============================================
+Total problematic agents: 2
+```
+
+When all agents are healthy:
+
+```text
+Agent Health Report - 2025-10-26 12:00:00 UTC
+============================================
+
+All agents are healthy - no issues detected.
+```
+
+#### Viewing Health History
+
+Health check results are stored in the database:
+
+```bash
+# Recent health checks for all agents
+sqlite3 data/server_metrics.db <<EOF
+SELECT agent_id, 
+       datetime(check_timestamp, 'unixepoch') as check_time,
+       success_ratio, 
+       is_problematic
+FROM agent_health_checks
+ORDER BY check_timestamp DESC
+LIMIT 20;
+EOF
+
+# Health trend for specific agent
+sqlite3 data/server_metrics.db <<EOF
+SELECT datetime(check_timestamp, 'unixepoch') as check_time,
+       expected_entries,
+       received_entries,
+       success_ratio
+FROM agent_health_checks
+WHERE agent_id = 'prod-agent-01'
+ORDER BY check_timestamp DESC
+LIMIT 10;
+EOF
+
+# Count of problematic checks per agent
+sqlite3 data/server_metrics.db <<EOF
+SELECT agent_id, 
+       COUNT(*) as problem_count,
+       AVG(success_ratio) as avg_ratio
+FROM agent_health_checks
+WHERE is_problematic = 1
+GROUP BY agent_id
+ORDER BY problem_count DESC;
+EOF
+```
+
+#### Troubleshooting Problematic Agents
+
+When an agent is flagged as problematic:
+
+1. **Check agent logs** - Look for errors, network issues, or crashes
+2. **Verify connectivity** - Ensure agent can reach server
+3. **Review task configuration** - Check if schedules are realistic
+4. **Inspect metrics** - Query database to see which task types are missing
+5. **Check agent process** - Ensure agent is running and not stuck
+
+```bash
+# Check which metric types are missing
+sqlite3 data/server_metrics.db <<EOF
+SELECT 'ping' as type, COUNT(*) FROM agg_metric_ping 
+  WHERE agent_id = 'prod-agent-01'
+UNION ALL
+SELECT 'http', COUNT(*) FROM agg_metric_http 
+  WHERE agent_id = 'prod-agent-01'
+UNION ALL
+SELECT 'dns', COUNT(*) FROM agg_metric_dns 
+  WHERE agent_id = 'prod-agent-01';
+EOF
+```
+
+### External Health Monitoring
+
+Implement additional external health checks:
 
 ```bash
 # Simple availability check
@@ -895,9 +1032,10 @@ curl -f http://localhost:8787/ || alert "Server down"
 # Endpoint response time
 curl -w "%{time_total}\n" -o /dev/null -s http://localhost:8787/
 
-# Agent check-in monitoring
-sqlite3 server.db "SELECT agent_id FROM agents
-  WHERE last_seen < datetime('now', '-5 minutes');"
+# Check for problematic agents file
+if [ -s ./data/problematic_agents.txt ]; then
+  cat ./data/problematic_agents.txt | mail -s "Agent Health Alert" admin@example.com
+fi
 ```
 
 ## 🔒 Security Best Practices

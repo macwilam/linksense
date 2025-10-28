@@ -63,7 +63,14 @@ pub(super) fn store_metric(
     metric: &AggregatedMetrics,
     http_data: &AggregatedHttpMetric,
 ) -> Result<()> {
-    let status_code_json = serde_json::to_string(&http_data.status_code_distribution)?;
+    // Convert HashMap to Vec of tuples for proper JSON serialization
+    // JSON only supports string keys, so we serialize as array of [code, count] pairs
+    let status_code_vec: Vec<(u16, u32)> = http_data
+        .status_code_distribution
+        .iter()
+        .map(|(&k, &v)| (k, v))
+        .collect();
+    let status_code_json = serde_json::to_string(&status_code_vec)?;
     tx.execute(
         r#"
         INSERT INTO agg_metric_http (agent_id, task_name, period_start, period_end, sample_count, success_rate_percent, avg_tcp_timing_ms, avg_tls_timing_ms, avg_ttfb_timing_ms, avg_content_download_timing_ms, avg_total_time_ms, max_total_time_ms, successful_requests, failed_requests, status_code_distribution, ssl_valid_percent, avg_ssl_cert_days_until_expiry, target_id)

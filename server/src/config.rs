@@ -449,6 +449,10 @@ mod tests {
             initial_cleanup_delay_seconds: 3600,
             graceful_shutdown_timeout_seconds: 30,
             wal_checkpoint_interval_seconds: 60,
+            monitor_agents_health: false,
+            health_check_interval_seconds: 300,
+            health_check_success_ratio_threshold: 0.9,
+            health_check_retention_days: 30,
         }
     }
 

@@ -27,6 +27,7 @@ mod api;
 mod bandwidth_state;
 mod config;
 mod database;
+mod health_monitor;
 mod reconfigure;
 
 use config::ConfigManager;
@@ -86,6 +87,8 @@ pub struct Server {
     cleanup_task_handle: Option<JoinHandle<()>>,
     /// Handle to the WAL checkpoint task for graceful shutdown.
     wal_checkpoint_task_handle: Option<JoinHandle<()>>,
+    /// Handle to the health monitoring task for graceful shutdown.
+    health_monitor_task_handle: Option<JoinHandle<()>>,
     /// Shutdown signal sender for notifying background tasks.
     shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 }
@@ -132,6 +135,7 @@ impl Server {
             reconfigure_task_handle: None,
             cleanup_task_handle: None,
             wal_checkpoint_task_handle: None,
+            health_monitor_task_handle: None,
             shutdown_tx: None,
         })
     }
@@ -258,7 +262,7 @@ impl Server {
         // Create application state with all dependencies
         let app_state = crate::api::AppState::new(
             server_config.clone(),
-            database_arc,
+            Arc::clone(&database_arc),
             Arc::clone(&self.config_manager),
             bandwidth_manager,
         );
@@ -319,6 +323,55 @@ impl Server {
         self.reconfigure_task_handle = Some(reconfigure_task);
         self.cleanup_task_handle = Some(cleanup_task);
         self.wal_checkpoint_task_handle = Some(wal_checkpoint_task);
+
+        // Start health monitoring task if enabled
+        if server_config.monitor_agents_health {
+            info!("Agent health monitoring is enabled");
+            let health_monitor = crate::health_monitor::HealthMonitor::new(
+                Arc::clone(&database_arc),
+                Arc::clone(&self.config_manager),
+                data_dir.clone(),
+            )?;
+
+            let health_check_interval_secs = server_config.health_check_interval_seconds;
+            let health_retention_days = server_config.health_check_retention_days;
+            let mut health_shutdown_rx = shutdown_tx.subscribe();
+
+            let health_monitor_task = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                    health_check_interval_secs,
+                ));
+
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            info!("Running scheduled agent health check");
+                            if let Err(e) = health_monitor.check_all_agents().await {
+                                error!("Agent health check failed: {}", e);
+                            }
+
+                            // Clean up old health check data
+                            if let Err(e) = health_monitor.cleanup_old_health_data(health_retention_days).await {
+                                error!("Health check data cleanup failed: {}", e);
+                            }
+                        }
+                        _ = health_shutdown_rx.recv() => {
+                            info!("Health monitor task received shutdown signal");
+                            break;
+                        }
+                    }
+                }
+            });
+
+            self.health_monitor_task_handle = Some(health_monitor_task);
+            info!(
+                "Health monitoring task started (interval: {}s, threshold: {:.0}%)",
+                health_check_interval_secs,
+                server_config.health_check_success_ratio_threshold * 100.0
+            );
+        } else {
+            info!("Agent health monitoring is disabled");
+        }
 
         // Create a shutdown signal receiver for axum
         let shutdown_signal = {
@@ -436,6 +489,31 @@ impl Server {
                 }
                 Err(_) => {
                     warn!("WAL checkpoint task shutdown timeout reached, aborting");
+                }
+            }
+        }
+
+        // Wait for health monitor task to complete
+        if let Some(handle) = self.health_monitor_task_handle.take() {
+            info!(
+                "Waiting for health monitor task to complete (timeout: {}s)",
+                shutdown_timeout_secs
+            );
+
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(shutdown_timeout_secs),
+                handle,
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    info!("Health monitor task completed successfully");
+                }
+                Ok(Err(e)) => {
+                    warn!("Health monitor task panicked: {}", e);
+                }
+                Err(_) => {
+                    warn!("Health monitor task shutdown timeout reached, aborting");
                 }
             }
         }

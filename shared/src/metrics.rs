@@ -6,6 +6,29 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Custom serialization module for HashMap<u16, u32> to handle JSON limitations
+/// JSON objects only support string keys, so we serialize as an array of [key, value] pairs
+mod status_code_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S>(map: &HashMap<u16, u32>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let vec: Vec<(u16, u32)> = map.iter().map(|(&k, &v)| (k, v)).collect();
+        vec.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<u16, u32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let vec: Vec<(u16, u32)> = Vec::deserialize(deserializer)?;
+        Ok(vec.into_iter().collect())
+    }
+}
+
 /// Raw metric data from a single task execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MetricData {
@@ -195,6 +218,7 @@ pub struct AggregatedHttpMetric {
     /// Number of failed requests
     pub failed_requests: u32,
     /// Distribution of HTTP status codes
+    #[serde(with = "status_code_serde")]
     pub status_code_distribution: std::collections::HashMap<u16, u32>,
     /// Percentage of requests with valid SSL certificates (0-100, or None if not HTTPS)
     pub ssl_valid_percent: Option<f64>,
@@ -584,5 +608,68 @@ mod tests {
         let json = serde_json::to_string(&aggregated).unwrap();
         let deserialized: AggregatedMetrics = serde_json::from_str(&json).unwrap();
         assert_eq!(aggregated, deserialized);
+    }
+
+    #[test]
+    fn test_http_status_code_distribution_serialization() {
+        use std::collections::HashMap;
+
+        // Create HTTP metric with status code distribution
+        let mut status_codes = HashMap::new();
+        status_codes.insert(200, 10);
+        status_codes.insert(404, 2);
+        status_codes.insert(500, 1);
+
+        let http_metric = AggregatedHttpMetric {
+            success_rate_percent: 76.9,
+            avg_tcp_timing_ms: 15.5,
+            avg_tls_timing_ms: 45.2,
+            avg_ttfb_timing_ms: 120.3,
+            avg_content_download_timing_ms: 50.1,
+            avg_total_time_ms: 231.1,
+            max_total_time_ms: 450.0,
+            successful_requests: 10,
+            failed_requests: 3,
+            status_code_distribution: status_codes.clone(),
+            ssl_valid_percent: Some(100.0),
+            avg_ssl_cert_days_until_expiry: Some(90.0),
+            target_id: None,
+        };
+
+        let aggregated = AggregatedMetrics::new(
+            "Test HTTP".to_string(),
+            crate::config::TaskType::HttpGet,
+            1640995200,
+            1640995260,
+            13,
+            AggregatedMetricData::HttpGet(http_metric),
+        );
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&aggregated).unwrap();
+
+        // Verify JSON format - should be array of tuples, not object with string keys
+        assert!(
+            json.contains("[[200,10]") || json.contains("[[404,2]") || json.contains("[[500,1]")
+        );
+        assert!(!json.contains("\"200\":"));
+        assert!(!json.contains("\"404\":"));
+        assert!(!json.contains("\"500\":"));
+
+        // Deserialize back
+        let deserialized: AggregatedMetrics = serde_json::from_str(&json).unwrap();
+
+        // Verify equality
+        assert_eq!(aggregated, deserialized);
+
+        // Verify status code distribution is intact
+        if let AggregatedMetricData::HttpGet(http_data) = deserialized.data {
+            assert_eq!(http_data.status_code_distribution.get(&200), Some(&10));
+            assert_eq!(http_data.status_code_distribution.get(&404), Some(&2));
+            assert_eq!(http_data.status_code_distribution.get(&500), Some(&1));
+            assert_eq!(http_data.status_code_distribution.len(), 3);
+        } else {
+            panic!("Expected HttpGet metric data");
+        }
     }
 }

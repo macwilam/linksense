@@ -396,13 +396,14 @@ async fn handle_metrics(
                 }
             }
             Err(e) => {
-                // If we can't find the config, treat as up-to-date to avoid breaking agents
-                debug!(
+                // Server doesn't have a config for this agent
+                // Request that the agent upload its config
+                warn!(
                     agent_id = %request.agent_id,
                     error = %e,
-                    "Could not retrieve server config hash, treating as up-to-date"
+                    "Server has no config for agent, requesting agent to upload its configuration"
                 );
-                ConfigStatus::UpToDate
+                ConfigStatus::Stale
             }
         }
     };
@@ -1013,6 +1014,10 @@ reconfigure_check_interval_seconds = 10
             initial_cleanup_delay_seconds: 3600,
             graceful_shutdown_timeout_seconds: 30,
             wal_checkpoint_interval_seconds: 60,
+            monitor_agents_health: false,
+            health_check_interval_seconds: 300,
+            health_check_success_ratio_threshold: 0.9,
+            health_check_retention_days: 30,
         };
 
         // Initialize database for testing
@@ -1414,6 +1419,10 @@ reconfigure_check_interval_seconds = 10
             initial_cleanup_delay_seconds: 3600,
             graceful_shutdown_timeout_seconds: 30,
             wal_checkpoint_interval_seconds: 60,
+            monitor_agents_health: false,
+            health_check_interval_seconds: 300,
+            health_check_success_ratio_threshold: 0.9,
+            health_check_retention_days: 30,
         };
 
         let mut database = crate::database::ServerDatabase::new(&data_dir).unwrap();
@@ -1716,5 +1725,124 @@ reconfigure_check_interval_seconds = 10
         // Should reset completely
         assert!(limiter.check_rate_limit("agent1").await.is_ok());
         assert!(limiter.check_rate_limit("agent1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint_requests_config_upload_when_server_has_no_config() {
+        let (app, _temp_dir) = create_test_app().await;
+
+        // Send metrics for an agent that doesn't have a config file on the server
+        let test_request = MetricsRequest {
+            agent_id: "new-agent-without-config".to_string(),
+            timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
+            config_checksum: "some-checksum-123".to_string(),
+            metrics: vec![],
+        };
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(endpoints::METRICS)
+            .header("content-type", "application/json")
+            .header(headers::API_KEY, "test-api-key")
+            .body(Body::from(serde_json::to_string(&test_request).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Parse response
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let metrics_response: MetricsResponse = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Server should respond with Stale status, requesting the agent to upload its config
+        assert_eq!(metrics_response.config_status, ConfigStatus::Stale);
+    }
+
+    #[tokio::test]
+    async fn test_config_verify_requests_upload_when_server_has_no_config() {
+        let (app, _temp_dir) = create_test_app().await;
+
+        // Agent verifies config for a non-existent config file
+        let test_request = ConfigVerifyRequest {
+            agent_id: "new-agent-without-config".to_string(),
+            tasks_config_hash: "some-hash-456".to_string(),
+        };
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(endpoints::CONFIG_VERIFY)
+            .header("content-type", "application/json")
+            .header(headers::API_KEY, "test-api-key")
+            .body(Body::from(serde_json::to_string(&test_request).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Parse response
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let verify_response: ConfigVerifyResponse = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Server should respond with Stale status and no config (requesting upload)
+        assert_eq!(verify_response.config_status, ConfigStatus::Stale);
+        assert!(verify_response.tasks_toml.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_config_upload_saves_when_server_has_no_config() {
+        use std::io::Write;
+        let (app, temp_dir) = create_test_app().await;
+
+        // Create valid tasks config
+        let tasks_toml = r#"
+[[tasks]]
+name = "test-ping"
+type = "ping"
+host = "8.8.8.8"
+schedule_seconds = 60
+"#;
+
+        // Compress and encode
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(tasks_toml.as_bytes()).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&compressed);
+
+        let test_request = ConfigUploadRequest {
+            agent_id: "new-agent".to_string(),
+            timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
+            tasks_toml: encoded,
+        };
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(endpoints::CONFIG_UPLOAD)
+            .header("content-type", "application/json")
+            .header(headers::API_KEY, "test-api-key")
+            .body(Body::from(serde_json::to_string(&test_request).unwrap()))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Parse response
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let upload_response: ConfigUploadResponse = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Server should accept the config
+        assert_eq!(upload_response.status, "success");
+        assert!(upload_response.accepted);
+
+        // Verify config was saved to disk
+        let config_path = temp_dir.path().join("configs/new-agent.toml");
+        assert!(config_path.exists());
+        let saved_content = std::fs::read_to_string(config_path).unwrap();
+        assert_eq!(saved_content.trim(), tasks_toml.trim());
     }
 }

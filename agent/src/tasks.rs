@@ -99,6 +99,32 @@ impl TaskExecutor {
         })
     }
 
+    /// Refreshes HTTP clients and TLS connectors by dropping old instances and creating new ones
+    ///
+    /// This method explicitly drops the existing reqwest client and TLS connectors,
+    /// then creates fresh instances. This helps prevent memory leaks and ensures
+    /// clean state for HTTP/TLS operations.
+    ///
+    /// # Returns
+    /// `Ok(())` on successful refresh, error if client/connector creation fails
+    pub fn refresh_clients(&mut self) -> Result<()> {
+        debug!("Refreshing HTTP clients and TLS connectors");
+
+        // Create new instances
+        self.http_content_client = reqwest::Client::builder()
+            .build()
+            .context("Failed to create new HTTP client for content tasks")?;
+
+        self.tls_connector_verify = crate::task_tls::create_tls_connector_with_verification()
+            .context("Failed to create new TLS connector with verification")?;
+
+        self.tls_connector_no_verify = crate::task_tls::create_tls_connector_without_verification()
+            .context("Failed to create new TLS connector without verification")?;
+
+        debug!("Successfully refreshed HTTP clients and TLS connectors");
+        Ok(())
+    }
+
     /// Executes a given task based on its configuration.
     /// This is the main entry point for the executor. It measures the execution
     /// time, calls the appropriate task implementation, and then sends the
