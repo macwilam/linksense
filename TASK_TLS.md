@@ -4,16 +4,16 @@ The **TLS Handshake** task implements standalone TLS connectivity testing that s
 
 ## Implementation Details
 
-### Custom TLS Implementation (via OpenSSL)
+### Custom TLS Implementation (via rustls)
 **Component**: `agent/src/task_tls.rs` - Shared TLS connection primitives
 
-This task uses **direct OpenSSL bindings** for TLS connections, providing low-level control and detailed timing.
+This task uses **rustls** (a pure-Rust TLS implementation) for TLS connections, providing memory-safe, modern TLS support with detailed timing.
 
 **Key Characteristics**:
 - **Raw TCP + TLS**: Establishes TCP connection, then performs TLS handshake
-- **OpenSSL via openssl crate**: Direct bindings to OpenSSL library
+- **rustls TLS stack**: Pure Rust, memory-safe TLS 1.2/1.3 implementation
 - **Stops After Handshake**: No HTTP request/response, just TLS negotiation
-- **Certificate Inspection**: Direct access to X.509 certificate details
+- **Certificate Inspection**: Direct access to X.509 certificate details via x509-parser
 - **Async/Non-blocking**: Built on Tokio runtime
 - **Precise Timing**: Separate measurements for TCP and TLS phases
 
@@ -22,31 +22,57 @@ This task uses **direct OpenSSL bindings** for TLS connections, providing low-le
 - ✅ **Certificate Monitoring**: Track certificate expiry, validity, issuer
 - ✅ **TLS Performance**: Isolate TLS handshake latency from application performance
 - ✅ **Lower Resource Usage**: No content download, minimal memory
-- ✅ **Protocol Agnostic**: Tests TLS layer regardless of application protocol
+- ✅ **Memory Safe**: Pure Rust implementation eliminates OpenSSL CVEs
+- ✅ **Direct TLS Services**: Works with any service using direct TLS (HTTPS, SMTPS, LDAPS)
 - ⚠️ **No Application Testing**: Doesn't verify service responds correctly
-- ⚠️ **HTTPS Only**: Designed for TLS/SSL services (not plain HTTP)
+- ⚠️ **Direct TLS Only**: Requires services with TLS from connection start (not plain HTTP)
+- ⚠️ **No STARTTLS Support**: Cannot test services requiring protocol upgrade (SMTP port 587, plain IMAP→STARTTLS)
 - ⚠️ **No Protocol Validation**: Cannot verify HTTP headers, SMTP commands, etc.
 
 **Why TLS-Only Testing?**
 - Certificate monitoring without HTTP overhead
 - Faster than HTTP GET when you only care about TLS health
-- Can test non-HTTP TLS services (SMTP over TLS, LDAPS, etc.)
+- Can test non-HTTP TLS services (SMTPS on port 465, LDAPS on port 636, etc.)
 - Isolates TLS performance from backend application performance
 - Useful baseline before attempting protocol-specific checks
 
-**TLS Handshake Flow**:
+**⚠️ IMPORTANT - Direct TLS vs STARTTLS:**
+This task only supports **direct TLS** connections where TLS encryption starts immediately upon connection. It does **NOT** support STARTTLS protocol upgrade (plaintext connection → upgrade to TLS).
+
+**Works with:**
+- HTTPS (port 443)
+- SMTPS - SMTP over TLS (port 465)
+- LDAPS - LDAP over TLS (port 636)
+- IMAPS - IMAP over TLS (port 993)
+- POP3S - POP3 over TLS (port 995)
+
+**Does NOT work with:**
+- SMTP with STARTTLS (port 587) - requires EHLO then STARTTLS command
+- IMAP with STARTTLS (port 143) - requires CAPABILITY then STARTTLS command
+- Plain services that optionally upgrade to TLS
+
+**TLS Handshake Flow (rustls implementation)**:
 ```rust
-1. Parse hostname:port
-2. Resolve hostname to IP (system resolver)
+1. Parse hostname:port from configuration
+2. Resolve hostname to IP via tokio DNS resolver
 3. Establish TCP connection (measure tcp_timing_ms)
-4. Start TLS handshake
-   - ClientHello (cipher suites, extensions)
-   - ServerHello (chosen cipher, certificate chain)
-   - Certificate verification (if verify_ssl = true)
-   - Key exchange, Finished messages
+4. Start rustls TLS handshake
+   - ClientHello (TLS 1.3/1.2, cipher suites, SNI extension)
+   - ServerHello (chosen TLS version & cipher)
+   - Certificate chain received from server
+   - Certificate verification via x509-parser:
+     * Parse DER-encoded certificate
+     * Extract validity period (not_before, not_after)
+     * Check expiry against current system time
+     * If verify_ssl=true: validate chain with system root certs
+     * If verify_ssl=false: skip chain validation, still extract info
+   - Key exchange (ECDHE/RSA), Finished messages
 5. Record TLS handshake time (measure tls_timing_ms)
-6. Extract certificate information
-7. Close connection
+6. Extract certificate information:
+   - expires_at (SystemTime)
+   - is_active (not expired)
+   - ssl_cert_days_until_expiry (calculated)
+7. Close TLS connection immediately (no application data sent)
 ```
 
 **TLS vs HTTP GET**:
@@ -86,11 +112,15 @@ target_id = "payment-prod"
 | `name` | string | ✅ | - | Unique identifier for this task |
 | `schedule_seconds` | integer | ✅ | - | Interval between checks (seconds) |
 | `host` | string | ✅ | - | Target host:port (e.g., `"example.com:443"`) |
-| `verify_ssl` | boolean | ❌ | false | If true, fail on invalid certificates; if false, collect cert info but don't fail |
+| `verify_ssl` | boolean | ❌ | false | Certificate verification mode (see below) |
 | `timeout` | integer | ❌ | 10 | Task-level timeout (seconds) |
 | `target_id` | string | ❌ | - | Optional identifier for grouping/filtering (e.g., "api-prod", "cdn-us") |
 
-**Note**: Default timeout is 10 seconds (higher than other tasks) since TLS handshakes can be slower than simple TCP connections.
+**Certificate Verification Behavior (`verify_ssl`):**
+- `verify_ssl = true`: Uses system root certificates to validate the certificate chain. Task **fails** if certificate is invalid (expired, wrong hostname, untrusted CA, incomplete chain).
+- `verify_ssl = false` (default): Accepts any certificate without validation. Task **succeeds** even with invalid certificates, but the `ssl_valid` metric field still indicates whether the certificate would be valid. Useful for monitoring certificate status on dev/internal servers without causing task failures.
+
+**Note**: Default timeout is 10 seconds (confirmed in code at `shared/src/config.rs:860`) - higher than other tasks since TLS handshakes can be slower than simple TCP connections.
 
 ### Configuration Examples
 
@@ -129,14 +159,15 @@ verify_ssl = true
 
 #### Non-HTTP TLS Services
 ```toml
-# SMTP over TLS (STARTTLS on port 587)
+# SMTP over TLS (direct TLS on port 465, NOT STARTTLS)
 [[tasks]]
 type = "tls_handshake"
 name = "Mail Server TLS"
 schedule_seconds = 300
-host = "smtp.example.com:465"  # SMTPS
+host = "smtp.example.com:465"  # SMTPS (direct TLS)
 verify_ssl = true
 
+# Note: Port 587 with STARTTLS is NOT supported - use port 465 (SMTPS) instead
 ```
 
 #### Compare TLS Performance Across Regions
@@ -291,9 +322,9 @@ Performs TLS handshakes to HTTPS/TLS services and measures:
 - **Disk I/O**: Batch writes to SQLite
 
 ### Execution Time
-- **TLS 1.3**: 50-100ms (1-RTT handshake)
-- **TLS 1.2**: 100-200ms (2-RTT handshake)
-- **Timeout**: 10 seconds (default)
+- **TLS 1.3**: 50-100ms (1-RTT handshake, rustls default preference)
+- **TLS 1.2**: 100-200ms (2-RTT handshake, fallback if server doesn't support 1.3)
+- **Timeout**: 10 seconds (default, hardcoded in `shared/src/config.rs:860`)
 - **TCP + TLS Total**: Typically 150-300ms
 
 ### Scalability
@@ -384,7 +415,10 @@ openssl s_client -connect example.com:443 -servername example.com < /dev/null \
 
 ### Debugging Tips
 
-**Test TLS manually:**
+**Test TLS manually (using OpenSSL CLI):**
+
+> **Note**: The agent uses rustls (not OpenSSL), but OpenSSL CLI tools are useful for manual verification. Behavior should be similar, though rustls may be stricter about certificate validation and cipher suite selection.
+
 ```bash
 # Full TLS connection test
 openssl s_client -connect example.com:443 -servername example.com
@@ -400,6 +434,13 @@ openssl s_client -connect example.com:443 -tls1_2
 # Check certificate chain
 openssl s_client -connect example.com:443 -showcerts
 ```
+
+**Key differences between rustls (agent) and OpenSSL (CLI tools):**
+- **Root certificates**: rustls loads system native certs via `rustls-native-certs`, OpenSSL uses its own cert store
+- **Cipher suites**: rustls only supports modern, secure ciphers (no RC4, 3DES, export ciphers)
+- **TLS versions**: rustls supports TLS 1.2 and 1.3 only (no SSL 2.0/3.0, TLS 1.0/1.1)
+- **SNI**: rustls always sends SNI (Server Name Indication), which matches modern standards
+- **Memory safety**: rustls is immune to OpenSSL-specific CVEs (Heartbleed, etc.)
 
 **Analyze timing patterns:**
 ```sql

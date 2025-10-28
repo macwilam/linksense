@@ -21,8 +21,17 @@ This task uses the **`ping-async`** crate, an unprivileged async ICMP ping libra
 - ✅ **Performance**: Non-blocking execution means one slow target doesn't block others
 - ✅ **Resource Efficient**: Very low CPU and memory usage even with frequent pings
 - ✅ **Production Ready**: Stable library used in production monitoring systems
+- ✅ **Intelligent Retry**: Automatic fallback to alternate IPs when hostname resolves to multiple addresses
+- ✅ **Load Balancing**: Random IP shuffling distributes load across resolved addresses
 - ⚠️ **Privilege Requirements**: Requires CAP_NET_RAW capability or root (see System Requirements)
 - ⚠️ **No System Cache**: Bypasses system resolver, tests actual network path
+
+**Additional Implementation Features**:
+- **DNS Resolution**: Uses `tokio::net::lookup_host` for async DNS queries
+- **IP Fallback**: Automatically tries all resolved IPs until one succeeds (code: `task_ping.rs:98-144`)
+- **Random Shuffling**: IPs are shuffled using `rand::seq::SliceRandom` for load distribution (code: `task_ping.rs:69-71`)
+- **Enhanced Errors**: Permission errors include helpful hints for fixing capability issues (code: `task_ping.rs:113-119`)
+- **Timeout Enforcement**: Single timeout wraps DNS resolution + all ping attempts (code: `task_ping.rs:199-206`)
 
 ## Configuration
 
@@ -67,7 +76,7 @@ target_id = "datacenter-us-east"  # Optional grouping identifier
 | `name` | string | ✅ | - | Unique identifier for this task |
 | `schedule_seconds` | integer | ✅ | - | Interval between ping tests (seconds) |
 | `host` | string | ✅ | - | Target hostname or IP address (IPv4/IPv6). If hostname, DNS resolution is performed before each ping. |
-| `timeout_seconds` | integer | ❌ | 5 | ICMP response timeout (seconds) |
+| `timeout_seconds` | integer | ❌ | 1 | ICMP response timeout (seconds) - covers DNS resolution + ping attempt(s) |
 | `timeout` | integer | ❌ | - | Task-level timeout override (seconds) |
 | `target_id` | string | ❌ | - | Optional identifier for grouping/filtering targets (e.g., "datacenter-1", "prod-servers") |
 
@@ -78,12 +87,24 @@ The `host` parameter accepts both IP addresses and hostnames:
 - **IP Address** (e.g., `"8.8.8.8"`, `"2001:4860:4860::8888"`): Used directly for ICMP ping
 - **Hostname** (e.g., `"google.com"`, `"internal-server.local"`): Resolved via DNS before each ping attempt
 
-When using hostnames:
-- DNS resolution is performed using `tokio::net::lookup_host`
-- The first resolved IP address is used for the ping
+**When using hostnames:**
+- DNS resolution is performed using `tokio::net::lookup_host` before each ping
+- If multiple IPs are resolved, all are tried until one succeeds (automatic fallback)
+- IPs are **shuffled randomly** for load balancing across multiple task executions
 - DNS resolution failures are recorded as failed ping attempts with error details
 - Both the resolved IP and original hostname are stored in metrics
-- DNS resolution time is NOT included in RTT measurement
+- DNS resolution time is NOT included in the `rtt_ms` metric field (but counts toward timeout)
+
+**Automatic IP Fallback:**
+When a hostname resolves to multiple IP addresses (common with load-balanced services):
+1. All resolved IPs are collected and shuffled randomly
+2. Ping attempts each IP in sequence until one succeeds
+3. If an IP fails, the next one is tried automatically
+4. Success is reported as soon as any IP responds
+5. If all IPs fail, the last error is reported
+6. All fallback attempts share the same timeout window
+
+**Example**: Pinging `google.com` might resolve to `[142.250.185.46, 2607:f8b0:4004:c07::71, 142.250.185.78]`. The agent will shuffle these IPs and try each one until it gets a successful response or exhausts all options within the timeout period.
 
 ### Configuration Examples
 
@@ -152,11 +173,24 @@ Captured for each individual ping execution:
 | `timestamp` | INTEGER | Unix epoch when ping was executed |
 | `rtt_ms` | REAL | Round-trip time in milliseconds (NULL if failed) |
 | `success` | BOOLEAN | Whether ping succeeded (1) or failed (0) |
-| `error` | TEXT | Error message if ping failed (NULL on success) |
+| `error` | TEXT | Error message if ping failed (NULL on success). See Error Message Types below. |
 | `ip_address` | TEXT | IP address that was actually pinged (resolved if hostname was used) |
 | `domain` | TEXT | Original hostname if `host` config was a domain (NULL if IP address) |
 | `target_id` | TEXT | Optional target identifier from configuration (NULL if not specified) |
 
+#### Error Message Types
+
+The `error` field contains one of the following message formats when a ping fails:
+
+| Error Type | Format | Example | Cause |
+|------------|--------|---------|-------|
+| DNS Resolution Failure | `DNS resolution failed for {host}: {error}` | `DNS resolution failed for example.invalid: No such host is known` | Hostname doesn't exist or DNS server unreachable |
+| DNS No Results | `DNS resolution returned no addresses for: {host}` | `DNS resolution returned no addresses for: internal.local` | DNS query succeeded but returned empty result set |
+| ICMP Permission Error | `Cannot initiate ICMP ping: {error}. Hint: ...` | `Cannot initiate ICMP ping: Operation not permitted. Hint: On Linux, add user to 'ping' group...` | Missing CAP_NET_RAW capability or ping group membership |
+| Ping Failure | `Ping failed: {error}` | `Ping failed: Request timeout` | ICMP echo request sent but no reply received |
+| Timeout | `Operation timed out after {N}s` | `Operation timed out after 1s` | Entire operation (DNS + ping attempts) exceeded timeout |
+
+**Note**: When multiple IPs are tried due to fallback, only the **last error** is recorded if all attempts fail.
 
 ### Aggregated Metrics (`agg_metric_ping`)
 
@@ -269,7 +303,9 @@ sudo iptables -A INPUT -p icmp --icmp-type echo-reply -j ACCEPT
 ### Execution Time
 - **Typical**: 10-50ms (local network)
 - **WAN**: 50-200ms (internet hosts)
-- **Timeout**: Configurable (default 5s)
+- **Timeout**: Configurable (default 1s, defined in `shared/src/defaults.rs:10`)
+- **With Hostname**: Add DNS resolution time (~10-100ms) to ping RTT
+- **With Multiple IPs**: Fallback attempts extend total time but share timeout window
 
 ## Troubleshooting
 
@@ -277,6 +313,12 @@ sudo iptables -A INPUT -p icmp --icmp-type echo-reply -j ACCEPT
 
 #### "Permission denied" Errors
 **Symptom**: Task fails with permission errors
+**Automatic Hint**: The agent automatically provides helpful guidance in error messages:
+```
+Cannot initiate ICMP ping: Operation not permitted. 
+Hint: On Linux, add user to 'ping' group or set capabilities: 
+sudo setcap cap_net_raw+ep /path/to/agent
+```
 **Solution**: Ensure raw socket privileges (see System Requirements above)
 
 #### "Request timeout" Failures
@@ -370,10 +412,12 @@ ping -c 10 -i 1 <host>
    - Together provide complete picture
 
 5. **Set Realistic Timeouts**:
-   - LAN: 1-2 seconds
-   - Internet: 5 seconds (default)
-   - Satellite/high-latency: 10+ seconds
-   - **Note**: Timeout is now properly enforced - operations will not hang indefinitely
+   - LAN: 1 second (default, suitable for fast local networks)
+   - Internet: 2-5 seconds (increase for WAN monitoring)
+   - Satellite/high-latency: 10+ seconds (adjust for high-latency links)
+   - **With Hostnames**: Add buffer for DNS resolution time (~100-500ms)
+   - **With Multiple IPs**: Consider fallback overhead when setting timeout
+   - **Note**: Timeout covers DNS resolution + all ping attempts - operations will not hang indefinitely
 
 6. **Leverage Domain Tracking**:
    - Query `domain` field in aggregated metrics to identify which hostnames are being monitored

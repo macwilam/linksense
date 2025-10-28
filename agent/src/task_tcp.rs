@@ -45,6 +45,8 @@ pub async fn execute_tcp_task(params: &TcpParams) -> RawTcpMetric {
     let timeout_duration = Duration::from_secs(params.timeout_seconds as u64);
 
     // Parse host:port into socket address
+    // Supports IPv6 addresses like "[2001:db8::1]:443" and automatic IPv4/IPv6 resolution
+    // Uses first available address from DNS resolution (could be IPv4 or IPv6)
     let socket_addr = match params.host.to_socket_addrs() {
         Ok(mut addrs) => {
             if let Some(addr) = addrs.next() {
@@ -53,7 +55,7 @@ pub async fn execute_tcp_task(params: &TcpParams) -> RawTcpMetric {
                 return RawTcpMetric {
                     connect_time_ms: None,
                     success: false,
-                    error: Some("Failed to resolve host".to_string()),
+                    error: Some("Failed to parse host: no addresses found".to_string()),
                     host: params.host.clone(),
                     target_id: params.target_id.clone(),
                 };

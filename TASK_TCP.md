@@ -14,12 +14,13 @@ This task uses **Tokio's async TCP implementation** for low-level socket connect
 - **No Protocol Layer**: Pure socket connection, no HTTP/TLS/application protocol
 - **Async/Non-blocking**: Built on Tokio runtime, zero thread overhead
 - **DNS Resolution**: Uses standard library `to_socket_addrs()` (system resolver)
+- **IPv6 Support**: Fully supports IPv6 addresses and automatic IPv4/IPv6 resolution
 - **Connection-Only**: Establishes connection then immediately closes it
 - **Precise Timing**: Measures exact TCP 3-way handshake duration
 
 **Consequences**:
 - ✅ **Extremely Fast**: No protocol overhead, just TCP handshake
-- ✅ **Minimal Resource Usage**: ~5KB memory per connection
+- ✅ **Minimal Resource Usage**: ~10-20KB memory per connection (includes socket buffers)
 - ✅ **Universal**: Works with any TCP service (SSH, databases, custom protocols)
 - ✅ **Port Testing**: Perfect for checking if ports are open/firewalled
 - ✅ **High Concurrency**: Can test 200+ ports simultaneously
@@ -36,18 +37,18 @@ This task uses **Tokio's async TCP implementation** for low-level socket connect
 
 **TCP Connection Flow**:
 ```rust
-1. Parse host:port string to socket address
-2. Resolve hostname to IP (if needed)
+1. Parse host:port string to socket address (supports IPv6 like "[2001:db8::1]:443")
+2. Resolve hostname to IP (if needed) - uses first available address
 3. Start timing
 4. Attempt TCP connection (SYN → SYN-ACK → ACK)
 5. Record connection time
-6. Close connection immediately
+6. Close connection immediately (explicit cleanup)
 ```
 
 **Failure Modes**:
 - **Connection Refused**: Port is closed, service not listening (fast failure)
 - **Timeout**: Firewall blocking, network unreachable (slow failure)
-- **DNS Failure**: Hostname doesn't resolve
+- **DNS Failure**: Hostname doesn't resolve or invalid host format
 - **Network Unreachable**: Routing issues
 
 ## Configuration
@@ -82,7 +83,7 @@ target_id = "postgres-primary"
 | `name` | string | ✅ | - | Unique identifier for this task |
 | `schedule_seconds` | integer | ✅ | - | Interval between checks (seconds) |
 | `host` | string | ✅ | - | Target in format `host:port` (e.g., `"server.com:22"` or `"192.168.1.10:3306"`) |
-| `timeout_seconds` | integer | ❌ | 5 | Connection timeout (seconds) |
+| `timeout_seconds` | integer | ❌ | 5 | Connection timeout (seconds, enforced via Tokio timeout) |
 | `timeout` | integer | ❌ | - | Task-level timeout override (seconds) |
 | `target_id` | string | ❌ | - | Optional identifier for grouping/filtering (e.g., "production-db", "backup-ssh") |
 
@@ -202,8 +203,8 @@ Captured for each individual TCP connection attempt:
 - **"Connection timeout"**: Firewall blocking or network unreachable
   - Slow failure (matches timeout setting)
   - Packets being dropped
-- **"Failed to parse host"**: Invalid host:port format
-- **"Failed to resolve host"**: DNS resolution failure
+- **"Failed to parse host"**: Invalid host:port format or DNS resolution failure
+- **"Failed to parse host: no addresses found"**: DNS resolved but no addresses returned
 
 ### Alerting Thresholds (Examples)
 
@@ -265,7 +266,7 @@ Attempts TCP connections to specified host:port combinations and measures:
 
 ### Resource Usage
 - **CPU**: Negligible (~0.1% per connection)
-- **Memory**: ~5KB per connection
+- **Memory**: ~10-20KB per connection (includes socket buffers)
 - **Network**: Single SYN packet + ACK (< 100 bytes total)
 - **Disk I/O**: Batch writes to SQLite
 
@@ -274,6 +275,12 @@ Attempts TCP connections to specified host:port combinations and measures:
 - **Internet**: 20-100ms
 - **Timeout**: 1-10 seconds (configurable)
 - **Connection refused**: < 100ms (immediate rejection)
+
+### IPv6 Support
+- **Full Support**: IPv6 addresses like "[2001:db8::1]:443" work natively
+- **Automatic Resolution**: System DNS resolver handles IPv4/IPv6 automatically
+- **First Address**: Uses first available address from DNS resolution
+- **Mixed Environments**: Works in pure IPv4, pure IPv6, and dual-stack networks
 
 ### Scalability
 - Can monitor **200+ ports** simultaneously
@@ -384,6 +391,9 @@ telnet server.example.com 22
 
 # Test with timeout
 timeout 5 bash -c 'cat < /dev/null > /dev/tcp/server.example.com/22'
+
+# Test IPv6 connectivity
+nc -6v [2001:db8::1]:443
 ```
 
 **Analyze connection patterns:**
@@ -433,9 +443,26 @@ LIMIT 20;
 ## Best Practices
 
 1. **Use Before Protocol Tests**:
-   - Test TCP connectivity before attempting HTTP/TLS/SQL
-   - Faster feedback on network issues
-   - Isolates network from application problems
+   # Test TCP connectivity before attempting HTTP/TLS/SQL
+   # Faster feedback on network issues
+   # Isolates network from application problems
+
+8. **Consider IPv6 in Monitoring**:
+   ```toml
+   # IPv4 monitoring
+   [[task]]
+   type = "tcp"
+   name = "IPv4 API Check"
+   [task.params]
+   host = "api.example.com:443"
+
+   # IPv6 monitoring (if service supports it)
+   [[task]]
+   type = "tcp"
+   name = "IPv6 API Check"
+   [task.params]
+   host = "[2001:db8::1]:443"
+   ```
 
 2. **Set Appropriate Timeouts**:
    - Local network: 1-3 seconds

@@ -19,8 +19,8 @@ This task uses a **custom low-level HTTP implementation** built directly on raw 
 
 **Consequences**:
 - ✅ **Extremely Fast**: No body reading/parsing overhead, focuses on connection metrics
-- ✅ **Low Resource Usage**: Minimal memory (~10-50KB per request)
-- ✅ **Detailed Timing**: Precise measurements at DNS, TCP, TLS, TTFB phases
+- ✅ **Low Resource Usage**: Minimal memory (~100KB per request, includes response buffer)
+- ✅ **Detailed Timing**: Precise measurements at TCP, TLS, TTFB phases
 - ✅ **High Concurrency**: Can monitor 50+ endpoints simultaneously on modest hardware
 - ✅ **SSL Certificate Information**: Direct access to certificate details (issuer, expiry, validity)
 - ⚠️ **No Content Reading**: Cannot validate response body (use HTTP Content task for that)
@@ -35,6 +35,8 @@ This task uses a **custom low-level HTTP implementation** built directly on raw 
 - Raw socket control provides exact measurements of TCP and TLS phases
 - `reqwest` is used in HTTP Content task where body processing is needed
 
+**Note on User-Agent**: The implementation currently uses "curl/8.7.1" as the User-Agent for all requests.
+
 **Timing Breakdown Provided**:
 ```rust
 tcp_timing_ms          // TCP handshake (SYN, SYN-ACK, ACK)
@@ -44,8 +46,18 @@ content_download_ms    // Response body download (minimal, headers only)
 total_time_ms          // Total request time (TCP + TLS + TTFB + content download)
 ```
 
+### HTTP Version Limitations
+- **Current**: HTTP/1.1 only (no HTTP/2 or HTTP/3 support)
+- **Impact**: May miss performance benefits of multiplexing in HTTP/2
+- **Consideration**: HTTP/2 would require significant architectural changes
+
 **Note on DNS Resolution**:
 DNS timing is **NOT measured** in this task. The system's local DNS resolver is used (which is typically cached), so measurements would not reflect true DNS performance. For accurate DNS performance monitoring, use the dedicated **DNS Query task** which can query specific DNS servers directly.
+
+### Security Limits
+- **Maximum Header Size**: 64KB (prevents header attacks)
+- **Maximum Response Size**: 100MB (prevents memory exhaustion)
+- **Maximum Drain Buffer**: 8KB reusable buffer for response discarding
 
 ## Configuration
 
@@ -71,10 +83,15 @@ timeout_seconds = 15           # HTTP request timeout (default: 30s)
 verify_ssl = true              # Enforce valid SSL certificate (default: false)
 
 [tasks.headers]
-"Authorization" = "Bearer secret-token-123"
 "User-Agent" = "LinkSense-Monitor/1.0"
 "X-Custom-Header" = "monitoring"
 ```
+
+### Configuration Validation
+- **URL Validation**: Must start with http:// or https://
+- **Timeout Range**: 1-300 seconds (enforced at task level)
+- **Header Limits**: Reasonable size limits enforced automatically
+- **SSL Settings**: verify_ssl boolean with clear behavior
 
 ### Configuration Parameters
 
@@ -312,11 +329,27 @@ Performs HTTP GET requests to target URLs and measures:
 - **Network**: Depends on response size (typically 1-100KB)
 - **Disk I/O**: Batch writes to SQLite
 
+### Performance Considerations
+- **Concurrency**: 50+ endpoints simultaneously on modest hardware
+- **Resource Impact**: Each request ~100KB memory, minimal CPU overhead
+- **Network Impact**: No connection reuse, higher overhead per request
+- **Recommendation**: Balance frequency vs resource usage
+
 ### Execution Time
 - **Typical**: 100-500ms (internet services)
 - **Fast APIs**: 50-200ms (optimized backends)
 - **Slow Endpoints**: 1-10s (legacy systems)
 - **Timeout**: Configurable (default 30s) - **Properly enforced** at HTTP client level
+
+### Timing Precision
+- **Resolution**: Microsecond precision using `std::time::Instant`
+- **Overhead**: Minimal measurement overhead (< 1ms per timing phase)
+- **Accuracy**: Platform-dependent, but suitable for network monitoring
+
+### Connection Management
+- **No Connection Reuse**: Each request creates a new TCP connection
+- **Impact**: Higher overhead but simpler state management
+- **Consideration**: Connection pooling could be added for high-frequency monitoring
 
 ### Scalability
 - Can monitor **50+ endpoints** simultaneously on modest hardware
@@ -327,7 +360,7 @@ Performs HTTP GET requests to target URLs and measures:
 
 ### Common Issues
 
-#### "SSL Certificate Verification Failed"
+#### SSL Certificate Verification Failed"
 **Symptom**: HTTPS requests fail with certificate errors (only when `verify_ssl = true`)
 **Causes**:
 - Expired SSL certificate
@@ -337,6 +370,12 @@ Performs HTTP GET requests to target URLs and measures:
 **Solutions**:
 - Fix certificate on target server (recommended for production)
 - Set `verify_ssl = false` to monitor endpoints with invalid certs (still collects cert info)
+
+### Error Handling
+- **Timeout Errors**: Network timeouts, connection failures
+- **SSL Errors**: Certificate validation failures, handshake timeouts
+- **Size Limits**: Header/response size exceeded errors
+- **Protocol Errors**: Invalid HTTP responses, malformed status lines
 
 #### High Total Request Time
 **Symptom**: `total_time_ms` consistently high
@@ -370,7 +409,7 @@ Performs HTTP GET requests to target URLs and measures:
 
 **Enable verbose HTTP logging:**
 ```bash
-RUST_LOG=debug,reqwest=trace ./agent /path/to/config
+RUST_LOG=debug,task_http=trace ./agent /path/to/config
 ```
 
 **Analyze timing patterns:**
@@ -424,6 +463,8 @@ time_total: %{time_total}s
    "User-Agent" = "LinkSense-Monitor/1.0"
    "X-Monitoring" = "true"
    ```
+
+   **Note**: The actual User-Agent sent will be "curl/8.7.1" unless overridden in headers.
    Helps ops teams identify monitoring traffic in logs
 
 5. **Compare Timings Across Regions**:

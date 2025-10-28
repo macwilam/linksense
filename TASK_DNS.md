@@ -37,20 +37,26 @@ This task uses **`hickory-dns`**, a pure Rust DNS client implementation.
 
 **Standard DNS (`dns_query`)**:
 ```rust
-1. Build DNS query packet for domain + record type
-2. Send UDP packet to specified DNS server (port 53)
-3. Wait for response (with timeout)
-4. Parse response, extract IP addresses/records
-5. Measure total query time
+1. Parse server address (auto-append :53 if port not specified)
+2. Build DNS query packet for domain + record type
+3. Send UDP packet to specified DNS server (port 53)
+4. Wait for response (with tokio::time::timeout wrapper)
+5. Parse response, extract IP addresses/records
+6. Clean up background task (bg_handle.abort())
+7. Measure total query time
 ```
 
 **DNS-over-HTTPS (`dns_query_doh`)**:
 ```rust
-1. Build DNS query in DoH format (RFC 8484)
-2. Send HTTPS POST to DoH server (e.g., https://cloudflare-dns.com/dns-query)
-3. Wait for HTTPS response (includes TLS handshake overhead)
-4. Parse DNS response from HTTPS body
-5. Measure total query time (includes HTTPS overhead)
+1. Build DNS query in DoH wire format (RFC 8484)
+2. Encode query to binary (BinEncodable)
+3. Create reqwest client with timeout configured
+4. Send HTTPS POST to DoH server with DNS wire-format body
+   - Content-Type: application/dns-message
+   - Accept: application/dns-message
+5. Wait for HTTPS response (timeout enforced by reqwest client)
+6. Parse DNS response from HTTPS body
+7. Measure total query time (includes HTTPS/TLS overhead)
 ```
 
 **UDP vs DoH Performance**:
@@ -93,10 +99,10 @@ record_type = "A"
 | `type` | string | ✅ | - | Must be `"dns_query"` |
 | `name` | string | ✅ | - | Unique identifier for this task |
 | `schedule_seconds` | integer | ✅ | - | Interval between queries (seconds) |
-| `server` | string | ✅ | - | DNS server IP address (IPv4 or IPv6) |
+| `server` | string | ✅ | - | DNS server IP address (IPv4 or IPv6). Port defaults to 53 if not specified (e.g., `8.8.8.8` → `8.8.8.8:53`) |
 | `domain` | string | ✅ | - | Domain name to resolve |
 | `record_type` | string | ✅ | - | DNS record type: `A`, `AAAA`, `MX`, `CNAME`, `TXT`, `NS` |
-| `timeout_seconds` | integer | ❌ | 10 | Query timeout (seconds) |
+| `timeout_seconds` | integer | ❌ | 5 | Query timeout (seconds) |
 | `timeout` | integer | ❌ | - | Task-level timeout override (seconds) |
 | `expected_ip` | string | ❌ | - | Expected IP address for validation (detects DNS hijacking/changes) |
 | `target_id` | string | ❌ | - | Optional identifier for grouping/filtering targets (e.g., "dns-internal", "dns-public") |
@@ -403,7 +409,9 @@ Performs DNS queries against specified DNS servers and measures:
 - **Cached DNS**: 1-10ms
 - **Uncached DNS**: 20-100ms
 - **DoH**: 50-200ms (HTTPS overhead)
-- **Timeout**: Configurable (default 10s) - **Properly enforced** with `tokio::time::timeout()`
+- **Timeout**: Configurable (default 5s, defined in `shared/src/defaults.rs:20`)
+  - Standard DNS: Enforced via `tokio::time::timeout()` wrapper
+  - DoH: Enforced via reqwest client `.timeout()` method
 
 ### Scalability
 - Can monitor **200+ DNS queries** simultaneously

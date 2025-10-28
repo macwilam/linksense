@@ -22,9 +22,10 @@ This task uses **`reqwest`**, a high-level async HTTP client with full response 
 - ✅ **Encoding Support**: Properly handles international characters and various encodings
 - ✅ **Production Ready**: Most popular HTTP client in Rust ecosystem
 - ✅ **Regex Validation**: Powerful pattern matching via `regex` crate (Rust regex engine)
+- ✅ **Size Protection**: Automatic rejection of responses exceeding 100MB to prevent memory exhaustion
 - ⚠️ **Higher Memory Usage**: Must buffer entire response (~response_size + overhead)
 - ⚠️ **Slower Than HTTP GET**: Body download and processing adds latency
-- ⚠️ **Not for Large Files**: Multi-MB responses consume significant memory
+- ⚠️ **Size Limit**: Responses larger than 100MB are automatically rejected (configurable in code)
 
 ### Crate: `regex`
 **Link**: [regex on crates.io](https://crates.io/crates/regex)
@@ -40,13 +41,26 @@ This task uses **`reqwest`**, a high-level async HTTP client with full response 
 
 **Response Processing Flow**:
 ```rust
-1. reqwest: HTTP request sent
+1. reqwest: HTTP request sent (with timeout)
 2. reqwest: Response headers received
-3. reqwest: Body downloaded (streamed, with decompression)
-4. reqwest: Character encoding detection and UTF-8 conversion
-5. regex: Pattern matching against body string
-6. Result: regexp_match = true/false
+3. Size check: Pre-flight check of Content-Length header
+   - If Content-Length > 100MB: Reject immediately, close connection
+   - If Content-Length ≤ 100MB or not present: Proceed to download
+4. reqwest: Body downloaded (streamed, with decompression)
+5. reqwest: Character encoding detection and UTF-8 conversion
+6. Size check: Post-read verification of actual body size
+   - If body > 100MB (no Content-Length was provided): Reject, free memory
+7. regex: Pattern matching against body string (compiled per-request)
+8. Memory: Explicit drop() of response body to free memory immediately
+9. Result: regexp_match = true/false
 ```
+
+**Memory Management Strategy** (code: `task_http_content.rs:15-127`):
+- **MAX_RESPONSE_SIZE**: Hard limit of 100MB per response
+- **Pre-flight check**: Inspect Content-Length header before reading body (saves bandwidth)
+- **Post-read check**: Verify actual size for responses without Content-Length header
+- **Explicit cleanup**: `drop(body_text)` immediately after regex matching to free memory
+- **Connection termination**: `drop(response)` on oversized responses to prevent download
 
 ## Configuration
 
@@ -82,9 +96,16 @@ timeout_seconds = 15
 | `schedule_seconds` | integer | ✅ | - | Interval between checks (seconds) |
 | `url` | string | ✅ | - | Target URL (must start with http:// or https://) |
 | `regexp` | string | ✅ | - | Regular expression pattern to match in response body |
-| `timeout_seconds` | integer | ❌ | 30 | Request timeout (seconds) |
+| `timeout_seconds` | integer | ❌ | 10 | Request timeout (seconds) |
 | `timeout` | integer | ❌ | - | Task-level timeout override (seconds) |
 | `target_id` | string | ❌ | - | Optional identifier for grouping/filtering targets (e.g., "content-prod", "api-staging") |
+
+**⚠️ Response Size Limit:**
+The agent enforces a **100MB maximum response size** to prevent memory exhaustion. Responses exceeding this limit are automatically rejected:
+- **Pre-flight check**: If `Content-Length` header indicates size > 100MB, response is rejected before download
+- **Post-read check**: If actual body size > 100MB (when no Content-Length provided), response is rejected and memory freed
+- **Error reporting**: Size limit violations are reported in the `error` field with detailed messages
+- **Configuration**: Limit is hardcoded in `agent/src/task_http_content.rs:15` as `MAX_RESPONSE_SIZE`
 
 ### Regular Expression Tips
 
@@ -217,11 +238,26 @@ Captured for each individual HTTP content check:
 | `total_size` | INTEGER | Response body size in bytes - NULL if failed |
 | `regexp_match` | BOOLEAN | Whether regex matched response body (1=yes, 0=no) |
 | `success` | BOOLEAN | Whether request succeeded (1) or failed (0) |
-| `error` | TEXT | Error message if request failed (NULL on success) |
+| `error` | TEXT | Error message if request failed (NULL on success). See Error Message Types below. |
 | `target_id` | TEXT | Optional target identifier from task configuration |
 
 
 **Important**: `success=1` means HTTP request succeeded. Check `regexp_match` to see if content was valid!
+
+#### Error Message Types
+
+The `error` field contains one of the following message formats when a request fails:
+
+| Error Type | Format | Example | Cause |
+|------------|--------|---------|-------|
+| Response Size (Pre-flight) | `Response size ({N} bytes) exceeds maximum of 100MB (detected from Content-Length header)` | `Response size (150000000 bytes) exceeds maximum of 104857600 bytes...` | Content-Length header indicates response > 100MB |
+| Response Size (Post-read) | `Response size ({N} bytes) exceeds maximum of 100MB (Content-Length header not provided)` | `Response size (120000000 bytes) exceeds maximum of 104857600 bytes...` | Actual body size > 100MB, no Content-Length header |
+| Body Read Failure | `Failed to read response body from {url}: {error}` | `Failed to read response body from https://api.example.com: connection reset` | Network error during body download |
+| Timeout | `Request to {url} timed out after {N}s` | `Request to https://slow-api.com timed out after 10s` | Request exceeded timeout_seconds |
+| Request Failure | `Request to {url} failed: {error}` | `Request to https://invalid.local failed: dns error` | Connection failed, DNS error, TLS error, etc. |
+| Regex Compilation | (via anyhow error) | `Failed to compile regexp: [invalid(regex` | Invalid regex pattern in configuration |
+
+**Note**: Regex compilation errors prevent task execution entirely and are reported through the task error mechanism (not in the `error` field).
 
 ### Aggregated Metrics (`agg_metric_http_content`)
 
@@ -341,13 +377,16 @@ Performs HTTP GET requests and validates response body against a regular express
 ### Execution Time
 - **API endpoints**: 100-500ms (small JSON responses)
 - **Web pages**: 200-1000ms (HTML + inline resources)
-- **Large responses**: 1-5s (MB-sized content)
-- **Timeout**: Configurable (default 30s) - **Properly enforced** with dual timeout (HTTP client + tokio::timeout)
+- **Large responses**: 1-5s (MB-sized content, up to 100MB max)
+- **Timeout**: Configurable (default 10s, defined in `shared/src/defaults.rs:15`) - Applied at reqwest client level via `.timeout()` method
+- **Regex compilation**: ~1-5ms per request (pattern compiled fresh each time)
 
 ### Scalability
 - Can monitor **30-50 content endpoints** on modest hardware
 - Limit depends on response sizes (more small responses = more concurrent tasks)
+- **100MB response limit** prevents single endpoint from exhausting memory
 - Recommended schedule: 60-300 seconds (content changes less frequently than availability)
+- **Note**: Each response consumes ~(response_size + 1MB) during processing, then freed immediately
 
 ## Troubleshooting
 
@@ -387,11 +426,17 @@ regexp = '"status"\\s*:\\s*"ok"'    # Only matches JSON structure
 
 #### Memory Usage Spikes
 **Symptom**: Agent memory grows with this task enabled
-**Cause**: Response body too large (multi-MB responses)
+**Causes**:
+- Response bodies too large (multi-MB responses)
+- Too many concurrent content checks
+- Responses approaching or exceeding 100MB limit
 **Solutions**:
+- Check logs for "Response size exceeds maximum" warnings
 - Use HTTP GET task instead (doesn't download body)
-- Reduce check frequency
+- Reduce check frequency or number of concurrent tasks
 - Request smaller endpoint (e.g., /health instead of full data dump)
+- Increase `schedule_seconds` to reduce overlap
+**Note**: The agent automatically rejects responses > 100MB to prevent memory exhaustion
 
 #### Inconsistent Match Rates
 **Symptom**: `regexp_match_rate_percent` fluctuates (80% → 95% → 70%)
