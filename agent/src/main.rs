@@ -13,6 +13,9 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+/// Agent version from Cargo.toml
+const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::Parser;
@@ -374,6 +377,7 @@ impl Agent {
                 .get_tasks_config_hash()
                 .expect("Failed to calculate tasks config hash"),
             metrics,
+            agent_version: Some(AGENT_VERSION.to_string()),
         };
 
         let url = format!("{}{}", agent_config.central_server_url, endpoints::METRICS);
@@ -867,6 +871,7 @@ impl Agent {
             timestamp_utc: timestamp.to_string(),
             config_checksum: config_checksum.to_string(),
             metrics: metrics.to_vec(),
+            agent_version: Some(AGENT_VERSION.to_string()),
         };
 
         let url = format!("{}{}", agent_config.central_server_url, endpoints::METRICS);

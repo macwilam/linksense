@@ -20,6 +20,7 @@ pub struct HealthMonitor {
     database: Arc<Mutex<ServerDatabase>>,
     config_manager: Arc<Mutex<ConfigManager>>,
     output_dir: PathBuf,
+    server_version: String,
 }
 
 /// Health metrics for a single agent
@@ -31,6 +32,8 @@ pub struct AgentHealthMetrics {
     pub received_entries: i64,
     pub success_ratio: f64,
     pub is_problematic: bool,
+    pub agent_version: Option<String>,
+    pub version_outdated: bool,
 }
 
 impl HealthMonitor {
@@ -40,10 +43,12 @@ impl HealthMonitor {
     /// * `database` - Shared database handle
     /// * `config_manager` - Shared configuration manager
     /// * `output_dir` - Directory where problematic_agents.txt will be written
+    /// * `server_version` - Current server version for comparison with agent versions
     pub fn new(
         database: Arc<Mutex<ServerDatabase>>,
         config_manager: Arc<Mutex<ConfigManager>>,
         output_dir: PathBuf,
+        server_version: String,
     ) -> Result<Self> {
         // Ensure output directory exists
         if !output_dir.exists() {
@@ -59,6 +64,7 @@ impl HealthMonitor {
             database,
             config_manager,
             output_dir,
+            server_version,
         })
     }
 
@@ -200,7 +206,11 @@ impl HealthMonitor {
             1.0 // No tasks expected = healthy by definition
         };
 
-        let is_problematic = success_ratio < threshold;
+        // Check if agent version is outdated
+        let version_outdated = self.is_agent_version_outdated(agent);
+
+        // Agent is problematic if success ratio is below threshold OR version is outdated
+        let is_problematic = success_ratio < threshold || version_outdated;
 
         Ok(AgentHealthMetrics {
             agent_id: agent.agent_id.clone(),
@@ -209,7 +219,57 @@ impl HealthMonitor {
             received_entries,
             success_ratio,
             is_problematic,
+            agent_version: agent.agent_version.clone(),
+            version_outdated,
         })
+    }
+
+    /// Checks if an agent's version is outdated compared to server version
+    ///
+    /// Returns true if agent version is lower than server version, or if agent version is unknown
+    fn is_agent_version_outdated(&self, agent: &AgentInfo) -> bool {
+        // If agent has no version info, consider it outdated
+        let agent_version_str = match &agent.agent_version {
+            Some(v) => v,
+            None => return true,
+        };
+
+        // Parse versions using semver-like comparison (simplified)
+        match self.compare_versions(&self.server_version, agent_version_str) {
+            Ok(ordering) => ordering == std::cmp::Ordering::Greater, // Server > Agent = outdated
+            Err(_) => true, // If we can't parse, consider it outdated for safety
+        }
+    }
+
+    /// Compare two version strings (semver format: major.minor.patch)
+    ///
+    /// Returns Ok(Ordering) where Greater means v1 > v2, Less means v1 < v2, Equal means v1 == v2
+    fn compare_versions(&self, v1: &str, v2: &str) -> Result<std::cmp::Ordering> {
+        let parse_version = |v: &str| -> Result<(u32, u32, u32)> {
+            let parts: Vec<&str> = v.split('.').collect();
+            if parts.len() != 3 {
+                anyhow::bail!("Invalid version format: {}", v);
+            }
+            let major = parts[0].parse::<u32>()?;
+            let minor = parts[1].parse::<u32>()?;
+            let patch = parts[2].parse::<u32>()?;
+            Ok((major, minor, patch))
+        };
+
+        let (major1, minor1, patch1) = parse_version(v1)?;
+        let (major2, minor2, patch2) = parse_version(v2)?;
+
+        Ok(
+            match (
+                major1.cmp(&major2),
+                minor1.cmp(&minor2),
+                patch1.cmp(&patch2),
+            ) {
+                (std::cmp::Ordering::Equal, std::cmp::Ordering::Equal, patch_cmp) => patch_cmp,
+                (std::cmp::Ordering::Equal, minor_cmp, _) => minor_cmp,
+                (major_cmp, _, _) => major_cmp,
+            },
+        )
     }
 
     /// Calculates the expected number of metric entries based on agent's task configuration
@@ -388,6 +448,12 @@ impl HealthMonitor {
             return self.clear_problematic_agents_file().await;
         }
 
+        // Get agent info including versions
+        let agents_info = {
+            let mut db = self.database.lock().await;
+            db.get_all_agents().await?
+        };
+
         let mut file = std::fs::File::create(&output_path)
             .with_context(|| format!("Failed to create report file: {}", output_path.display()))?;
 
@@ -395,11 +461,31 @@ impl HealthMonitor {
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
         writeln!(file, "Agent Health Report - {}", timestamp)?;
         writeln!(file, "============================================")?;
+        writeln!(file, "Server Version: {}", self.server_version)?;
         writeln!(file)?;
 
         // Write each problematic agent
         for agent in &problematic {
+            // Find matching agent info for version
+            let agent_info = agents_info.iter().find(|a| a.agent_id == agent.agent_id);
+            let agent_version = agent_info
+                .and_then(|a| a.agent_version.as_deref())
+                .unwrap_or("unknown");
+
+            // Check if version is outdated
+            let version_outdated = agent_info
+                .map(|a| self.is_agent_version_outdated(a))
+                .unwrap_or(true);
+
             writeln!(file, "agent_id: {}", agent.agent_id)?;
+            writeln!(file, "  Agent Version: {}", agent_version)?;
+            if version_outdated {
+                writeln!(
+                    file,
+                    "  Version Status: OUTDATED (server: {})",
+                    self.server_version
+                )?;
+            }
             writeln!(
                 file,
                 "  Last Push: {} seconds ago",
@@ -448,7 +534,12 @@ impl HealthMonitor {
 
     /// Cleans up old health check data based on retention policy
     pub async fn cleanup_old_health_data(&self, retention_days: u32) -> Result<()> {
-        let cutoff_time = current_timestamp() - (retention_days as u64 * 24 * 60 * 60);
+        // Use saturating arithmetic to prevent overflow with large retention values
+        let retention_seconds = (retention_days as u64)
+            .saturating_mul(24)
+            .saturating_mul(60)
+            .saturating_mul(60);
+        let cutoff_time = current_timestamp().saturating_sub(retention_seconds);
 
         info!(
             "Cleaning up health check data older than {} days (before timestamp: {})",
@@ -535,7 +626,8 @@ bandwidth_test_size_mb = 10
         let (db, config_manager, temp_dir) = setup_test_environment().await;
         let output_dir = temp_dir.path().join("output");
 
-        let monitor = HealthMonitor::new(db, config_manager, output_dir.clone());
+        let monitor =
+            HealthMonitor::new(db, config_manager, output_dir.clone(), "0.7.6".to_string());
         assert!(monitor.is_ok());
         assert!(output_dir.exists());
     }
@@ -545,7 +637,8 @@ bandwidth_test_size_mb = 10
         let (db, config_manager, temp_dir) = setup_test_environment().await;
         let output_dir = temp_dir.path().join("output");
 
-        let monitor = HealthMonitor::new(db, config_manager, output_dir).unwrap();
+        let monitor =
+            HealthMonitor::new(db, config_manager, output_dir, "0.7.6".to_string()).unwrap();
         let result = monitor.check_all_agents().await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0); // No problematic agents
@@ -603,7 +696,8 @@ bandwidth_test_size_mb = 10
         };
         std::fs::write(&agent_config_path, tasks_toml).unwrap();
 
-        let monitor = HealthMonitor::new(db, config_manager, output_dir).unwrap();
+        let monitor =
+            HealthMonitor::new(db, config_manager, output_dir, "0.7.6".to_string()).unwrap();
 
         // For a 5-minute (300s) period:
         // Number of aggregation windows: 300 / 60 = 5

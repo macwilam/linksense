@@ -176,7 +176,12 @@ pub fn create_router(state: AppState) -> Router {
 }
 
 /// Helper function to validate API key from request headers
+///
+/// Uses constant-time comparison to prevent timing attacks that could
+/// allow an attacker to deduce the API key character-by-character.
 fn validate_api_key(headers: &HeaderMap, expected_key: &str) -> Result<(), ApiError> {
+    use subtle::ConstantTimeEq;
+
     let provided_key = match headers.get(headers::API_KEY) {
         Some(key) => match key.to_str() {
             Ok(key_str) => key_str,
@@ -196,7 +201,16 @@ fn validate_api_key(headers: &HeaderMap, expected_key: &str) -> Result<(), ApiEr
         return Err(ApiError::Unauthorized);
     }
 
-    if provided_key != expected_key {
+    // Use constant-time comparison to prevent timing attacks
+    let provided_bytes = provided_key.as_bytes();
+    let expected_bytes = expected_key.as_bytes();
+
+    // First check lengths match (this leaks length info, but API keys should be fixed length)
+    // Then do constant-time content comparison
+    let keys_match = provided_bytes.len() == expected_bytes.len()
+        && bool::from(provided_bytes.ct_eq(expected_bytes));
+
+    if !keys_match {
         warn!("Invalid API key provided");
         return Err(ApiError::Unauthorized);
     }
@@ -336,7 +350,11 @@ async fn handle_metrics(
     {
         let mut db = state.database.lock().await;
         if let Err(e) = db
-            .upsert_agent(&request.agent_id, &request.config_checksum)
+            .upsert_agent(
+                &request.agent_id,
+                &request.config_checksum,
+                request.agent_version.as_deref(),
+            )
             .await
         {
             error!(
@@ -423,10 +441,15 @@ async fn handle_metrics(
 ///
 /// IMPORTANT: The download size is controlled ONLY by server configuration.
 /// The agent cannot influence the size - any size_mb parameter is ignored.
+///
+/// This endpoint uses streaming to avoid allocating the entire response in memory,
+/// which prevents memory exhaustion attacks with large bandwidth test sizes.
 async fn handle_bandwidth_download(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
+    use futures_util::stream;
+
     let agent_id = params.get("agent_id").map_or("", |s| s.as_str());
 
     // Validate agent ID
@@ -470,36 +493,33 @@ async fn handle_bandwidth_download(
         "Serving bandwidth test data (server-controlled size)"
     );
 
-    // Use a streaming approach with a reusable buffer to avoid large memory allocations
-    // This is more efficient than allocating the entire test data at once
-    const CHUNK_SIZE: usize = 64 * 1024; // 64 KB chunks
-    let total_size = (size_mb as usize) * 1024 * 1024;
+    // Use streaming to avoid allocating entire response in memory
+    // This prevents memory exhaustion with large bandwidth tests (e.g., 100MB+)
+    const CHUNK_SIZE: usize = 64 * 1024; // 64 KB chunks - good balance for network efficiency
+    let total_size = (size_mb as usize).saturating_mul(1024 * 1024);
+    let chunks_needed = total_size.saturating_add(CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-    // Create a zero-filled buffer that will be reused
-    let zero_chunk = vec![0u8; CHUNK_SIZE];
-    let mut remaining = total_size;
-    let mut chunks = Vec::new();
+    // Create a single zero-filled chunk that will be reused in the stream
+    // This keeps memory usage constant at ~64KB regardless of total download size
+    let zero_chunk = axum::body::Bytes::from(vec![0u8; CHUNK_SIZE]);
 
-    while remaining > 0 {
-        let chunk_size = std::cmp::min(remaining, CHUNK_SIZE);
-        chunks.push(zero_chunk[..chunk_size].to_vec());
-        remaining -= chunk_size;
-    }
+    // Create a stream that yields chunks without allocating the full response
+    let byte_stream = stream::iter((0..chunks_needed).map(move |i| {
+        let offset = i * CHUNK_SIZE;
+        let remaining = total_size.saturating_sub(offset);
+        let chunk_len = std::cmp::min(remaining, CHUNK_SIZE);
 
-    // Combine all chunks into the final response
-    let test_data = chunks.concat();
-
-    use axum::http::StatusCode;
-    use axum::response::Response;
-
-    let response = Response::builder()
-        .status(StatusCode::OK)
-        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
-        .header(axum::http::header::CONTENT_LENGTH, test_data.len())
-        .body(axum::body::Body::from(test_data))
-        .map_err(|e| ApiError::Internal(format!("Failed to build response: {}", e)))?;
+        if chunk_len == CHUNK_SIZE {
+            // Full chunk - reuse the pre-allocated buffer
+            Ok::<_, std::io::Error>(zero_chunk.clone())
+        } else {
+            // Last chunk may be smaller
+            Ok(axum::body::Bytes::from(vec![0u8; chunk_len]))
+        }
+    }));
 
     // Mark the test as completed so queued tests can proceed
+    // We do this before streaming starts so other agents don't wait unnecessarily
     {
         let bandwidth_manager = state.bandwidth_manager.lock().await;
         bandwidth_manager.complete_test(agent_id).await;
@@ -507,8 +527,16 @@ async fn handle_bandwidth_download(
 
     info!(
         agent_id = %agent_id,
-        "Bandwidth test completed, queued agents can proceed"
+        total_size = total_size,
+        "Bandwidth test streaming started, queued agents can proceed"
     );
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+        .header(axum::http::header::CONTENT_LENGTH, total_size)
+        .body(axum::body::Body::from_stream(byte_stream))
+        .map_err(|e| ApiError::Internal(format!("Failed to build response: {}", e)))?;
 
     Ok(response)
 }
@@ -518,8 +546,12 @@ async fn handle_bandwidth_download(
 // `Query(params)` is an extractor for URL query parameters.
 async fn handle_configs(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<ConfigsResponse>, ApiError> {
+    // Validate API key - configs contain sensitive task definitions
+    validate_api_key(&headers, &state.config.api_key)?;
+
     // The agent identifies itself via a query parameter.
     let agent_id = params.get("agent_id").map_or("", |s| s.as_str());
 
@@ -1063,6 +1095,7 @@ reconfigure_check_interval_seconds = 10
             timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
             config_checksum: "checksum123".to_string(),
             metrics: vec![],
+            agent_version: Some("0.7.6".to_string()),
         };
 
         let request = Request::builder()
@@ -1084,6 +1117,7 @@ reconfigure_check_interval_seconds = 10
         let request = Request::builder()
             .method(Method::GET)
             .uri(format!("{}?agent_id=test", endpoints::CONFIGS))
+            .header(headers::API_KEY, "test-api-key")
             .body(Body::empty())
             .unwrap();
 
@@ -1100,6 +1134,21 @@ reconfigure_check_interval_seconds = 10
         }
 
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_configs_endpoint_requires_api_key() {
+        let (app, _temp_dir) = create_test_app().await;
+
+        // Request without API key should be rejected
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("{}?agent_id=test", endpoints::CONFIGS))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -1223,6 +1272,7 @@ reconfigure_check_interval_seconds = 10
             timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
             config_checksum: "checksum123".to_string(),
             metrics: vec![],
+            agent_version: Some("0.7.6".to_string()),
         };
 
         let request = Request::builder()
@@ -1247,6 +1297,7 @@ reconfigure_check_interval_seconds = 10
             timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
             config_checksum: "checksum123".to_string(),
             metrics: vec![],
+            agent_version: Some("0.7.6".to_string()),
         };
 
         let request = Request::builder()
@@ -1271,6 +1322,7 @@ reconfigure_check_interval_seconds = 10
             timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
             config_checksum: "checksum123".to_string(),
             metrics: vec![],
+            agent_version: Some("0.7.6".to_string()),
         };
 
         let request = Request::builder()
@@ -1336,6 +1388,7 @@ reconfigure_check_interval_seconds = 10
         let request = Request::builder()
             .method(Method::GET)
             .uri(format!("{}?agent_id=", endpoints::CONFIGS))
+            .header(headers::API_KEY, "test-api-key")
             .body(Body::empty())
             .unwrap();
 
@@ -1451,6 +1504,7 @@ reconfigure_check_interval_seconds = 10
             timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
             config_checksum: "abc123".to_string(),
             metrics: vec![],
+            agent_version: Some("0.7.6".to_string()),
         };
 
         let request = Request::builder()
@@ -1477,6 +1531,7 @@ reconfigure_check_interval_seconds = 10
             timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
             config_checksum: "abc123".to_string(),
             metrics: vec![],
+            agent_version: Some("0.7.6".to_string()),
         };
 
         let request = Request::builder()
@@ -1503,6 +1558,7 @@ reconfigure_check_interval_seconds = 10
             timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
             config_checksum: "abc123".to_string(),
             metrics: vec![],
+            agent_version: Some("0.7.6".to_string()),
         };
 
         let request = Request::builder()
@@ -1592,6 +1648,7 @@ reconfigure_check_interval_seconds = 10
         let request = Request::builder()
             .method(Method::GET)
             .uri(format!("{}?agent_id=blocked-agent", endpoints::CONFIGS))
+            .header(headers::API_KEY, "test-api-key")
             .body(Body::empty())
             .unwrap();
 
@@ -1737,6 +1794,7 @@ reconfigure_check_interval_seconds = 10
             timestamp_utc: "2023-01-01T00:00:00Z".to_string(),
             config_checksum: "some-checksum-123".to_string(),
             metrics: vec![],
+            agent_version: Some("0.7.6".to_string()),
         };
 
         let request = Request::builder()

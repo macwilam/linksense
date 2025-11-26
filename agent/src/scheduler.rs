@@ -601,15 +601,16 @@ impl TaskScheduler {
     /// `Ok(())` on success, error if aggregation or database operations fail
     pub async fn check_and_perform_aggregation(&mut self) -> Result<()> {
         let current_time = self.get_current_timestamp();
-        let current_minute = current_time / 60 * 60; // Round down to full minute
-        debug!("Checking agregator");
+        // Round down to full minute using saturating arithmetic to prevent overflow
+        let current_minute = current_time.saturating_div(60).saturating_mul(60);
+        debug!("Checking aggregator");
         // Check if we've moved to a new minute
         if current_minute > self.last_aggregation {
             // Flush any remaining buffered metrics before aggregation
             self.flush_metrics_now().await?;
 
             let period_end = current_minute;
-            let period_start = period_end - 60; // Previous minute
+            let period_start = period_end.saturating_sub(60); // Previous minute
 
             debug!(
                 "Performing aggregation for period {}-{}",

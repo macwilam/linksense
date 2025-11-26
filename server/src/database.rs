@@ -78,6 +78,7 @@ impl ServerDatabase {
                 last_seen INTEGER NOT NULL,
                 last_config_checksum TEXT,
                 total_metrics_received INTEGER DEFAULT 0,
+                agent_version TEXT,
                 created_at INTEGER DEFAULT (strftime('%s', 'now'))
             )
             "#,
@@ -173,7 +174,12 @@ impl ServerDatabase {
 
     /// Registers a new agent or updates the status of an existing one.
     /// This is an "upsert" operation: it updates if the agent exists, or inserts if not.
-    pub async fn upsert_agent(&mut self, agent_id: &str, config_checksum: &str) -> Result<()> {
+    pub async fn upsert_agent(
+        &mut self,
+        agent_id: &str,
+        config_checksum: &str,
+        agent_version: Option<&str>,
+    ) -> Result<()> {
         debug!("Upserting agent: {}", agent_id);
 
         let conn = self.get_connection()?;
@@ -184,20 +190,20 @@ impl ServerDatabase {
         let updated_rows = conn.execute(
             r#"
             UPDATE agents
-            SET last_seen = ?1, last_config_checksum = ?2, total_metrics_received = total_metrics_received + 1
-            WHERE agent_id = ?3
+            SET last_seen = ?1, last_config_checksum = ?2, agent_version = ?3, total_metrics_received = total_metrics_received + 1
+            WHERE agent_id = ?4
             "#,
-            params![current_time, config_checksum, agent_id],
+            params![current_time, config_checksum, agent_version, agent_id],
         )?;
 
         // If `execute` returns 0, no rows were updated, which means the agent is new.
         if updated_rows == 0 {
             conn.execute(
                 r#"
-                INSERT INTO agents (agent_id, first_seen, last_seen, last_config_checksum, total_metrics_received)
-                VALUES (?1, ?2, ?3, ?4, 1)
+                INSERT INTO agents (agent_id, first_seen, last_seen, last_config_checksum, agent_version, total_metrics_received)
+                VALUES (?1, ?2, ?3, ?4, ?5, 1)
                 "#,
-                params![agent_id, current_time, current_time, config_checksum],
+                params![agent_id, current_time, current_time, config_checksum, agent_version],
             ).with_context(|| format!("Failed to insert new agent: {}", agent_id))?;
 
             info!("Registered new agent: {}", agent_id);
@@ -297,7 +303,7 @@ impl ServerDatabase {
 
         let mut stmt = conn.prepare(
             r#"
-            SELECT agent_id, first_seen, last_seen, last_config_checksum, total_metrics_received
+            SELECT agent_id, first_seen, last_seen, last_config_checksum, total_metrics_received, agent_version
             FROM agents
             WHERE agent_id = ?1
             "#,
@@ -311,6 +317,7 @@ impl ServerDatabase {
                 last_seen: row.get::<_, i64>(2)? as u64,
                 last_config_checksum: row.get(3)?,
                 total_metrics_received: row.get::<_, i64>(4)? as u64,
+                agent_version: row.get(5)?,
             })
         });
 
@@ -331,7 +338,7 @@ impl ServerDatabase {
 
         let mut stmt = conn.prepare(
             r#"
-            SELECT agent_id, first_seen, last_seen, last_config_checksum, total_metrics_received
+            SELECT agent_id, first_seen, last_seen, last_config_checksum, total_metrics_received, agent_version
             FROM agents
             ORDER BY last_seen DESC
             "#,
@@ -344,6 +351,7 @@ impl ServerDatabase {
                 last_seen: row.get::<_, i64>(2)? as u64,
                 last_config_checksum: row.get(3)?,
                 total_metrics_received: row.get::<_, i64>(4)? as u64,
+                agent_version: row.get(5)?,
             })
         })?;
 
@@ -359,7 +367,12 @@ impl ServerDatabase {
     /// Cleans up old data from the database based on the configured retention period.
     /// This is a critical maintenance task to prevent the database from growing indefinitely.
     pub async fn cleanup_old_data(&mut self, retention_days: u32) -> Result<()> {
-        let cutoff_time = current_timestamp() - (retention_days as u64 * 24 * 60 * 60);
+        // Use saturating arithmetic to prevent overflow with large retention values
+        let retention_seconds = (retention_days as u64)
+            .saturating_mul(24)
+            .saturating_mul(60)
+            .saturating_mul(60);
+        let cutoff_time = current_timestamp().saturating_sub(retention_seconds);
         info!(
             "Cleaning up data older than {} days (before timestamp: {})",
             retention_days, cutoff_time
@@ -550,6 +563,7 @@ pub struct AgentInfo {
     pub last_seen: u64,
     pub last_config_checksum: Option<String>,
     pub total_metrics_received: u64,
+    pub agent_version: Option<String>,
 }
 
 /// A struct to hold statistics about the server's database.
@@ -593,7 +607,9 @@ mod tests {
         let mut db = ServerDatabase::new(temp_dir.path()).unwrap();
         db.initialize().await.unwrap();
 
-        let result = db.upsert_agent("test-agent-01", "checksum123").await;
+        let result = db
+            .upsert_agent("test-agent-01", "checksum123", Some("0.7.6"))
+            .await;
         assert!(result.is_ok());
 
         let agent_info = db.get_agent_info("test-agent-01").await.unwrap();
@@ -608,7 +624,7 @@ mod tests {
         db.initialize().await.unwrap();
 
         // An agent must be registered before its metrics can be stored, due to the foreign key constraint.
-        db.upsert_agent("test-agent-01", "checksum123")
+        db.upsert_agent("test-agent-01", "checksum123", Some("0.7.6"))
             .await
             .unwrap();
 
@@ -640,7 +656,7 @@ mod tests {
         let mut db = ServerDatabase::new(temp_dir.path()).unwrap();
         db.initialize().await.unwrap();
 
-        db.upsert_agent("test-agent-01", "checksum123")
+        db.upsert_agent("test-agent-01", "checksum123", Some("0.7.6"))
             .await
             .unwrap();
 
@@ -673,8 +689,12 @@ mod tests {
         let mut db = ServerDatabase::new(temp_dir.path()).unwrap();
         db.initialize().await.unwrap();
 
-        db.upsert_agent("agent-01", "checksum1").await.unwrap();
-        db.upsert_agent("agent-02", "checksum2").await.unwrap();
+        db.upsert_agent("agent-01", "checksum1", Some("0.7.6"))
+            .await
+            .unwrap();
+        db.upsert_agent("agent-02", "checksum2", Some("0.7.5"))
+            .await
+            .unwrap();
 
         let agents = db.get_all_agents().await.unwrap();
         assert_eq!(agents.len(), 2);
@@ -687,7 +707,9 @@ mod tests {
         db.initialize().await.unwrap();
 
         // Register agent first
-        db.upsert_agent("test-agent", "hash").await.unwrap();
+        db.upsert_agent("test-agent", "hash", Some("0.7.6"))
+            .await
+            .unwrap();
 
         // Insert old ping metrics (100 days ago)
         let old_timestamp = current_timestamp() - (100 * 24 * 60 * 60);
@@ -739,7 +761,9 @@ mod tests {
         }
 
         // Insert recent agent
-        db.upsert_agent("recent-agent", "hash").await.unwrap();
+        db.upsert_agent("recent-agent", "hash", Some("0.7.6"))
+            .await
+            .unwrap();
 
         // Run cleanup with 30 day retention
         db.cleanup_old_data(30).await.unwrap();
@@ -757,7 +781,9 @@ mod tests {
         db.initialize().await.unwrap();
 
         // Register agent and insert metrics within retention period
-        db.upsert_agent("test-agent", "hash").await.unwrap();
+        db.upsert_agent("test-agent", "hash", Some("0.7.6"))
+            .await
+            .unwrap();
 
         let metric = AggregatedMetrics {
             task_name: "Recent Ping".to_string(),
@@ -794,7 +820,9 @@ mod tests {
         let mut db = ServerDatabase::new(temp_dir.path()).unwrap();
         db.initialize().await.unwrap();
 
-        db.upsert_agent("test-agent", "hash").await.unwrap();
+        db.upsert_agent("test-agent", "hash", Some("0.7.6"))
+            .await
+            .unwrap();
 
         // Insert old config error directly
         let old_timestamp = current_timestamp() - (100 * 24 * 60 * 60);
@@ -826,7 +854,9 @@ mod tests {
         let mut db = ServerDatabase::new(temp_dir.path()).unwrap();
         db.initialize().await.unwrap();
 
-        db.upsert_agent("test-agent", "checksum123").await.unwrap();
+        db.upsert_agent("test-agent", "checksum123", Some("0.7.6"))
+            .await
+            .unwrap();
 
         let agent_info = db.get_agent_info("test-agent").await.unwrap();
         assert!(agent_info.is_some());

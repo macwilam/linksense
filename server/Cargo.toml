@@ -40,6 +40,8 @@ tikv-jemallocator.workspace = true
 axum.workspace = true
 tower.workspace = true
 clap.workspace = true
+subtle.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

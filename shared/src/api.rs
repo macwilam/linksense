@@ -37,6 +37,8 @@ pub struct MetricsRequest {
     pub timestamp_utc: String,
     pub config_checksum: String,
     pub metrics: Vec<crate::metrics::AggregatedMetrics>,
+    #[serde(default)]
+    pub agent_version: Option<String>,
 }
 
 /// Response body for POST /api/v1/metrics endpoint

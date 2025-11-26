@@ -13,6 +13,9 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+/// Server version from Cargo.toml
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
@@ -331,6 +334,7 @@ impl Server {
                 Arc::clone(&database_arc),
                 Arc::clone(&self.config_manager),
                 data_dir.clone(),
+                SERVER_VERSION.to_string(),
             )?;
 
             let health_check_interval_secs = server_config.health_check_interval_seconds;

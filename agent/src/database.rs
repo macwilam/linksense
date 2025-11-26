@@ -213,7 +213,12 @@ impl AgentDatabase {
 
     /// Clean up old data from the database based on the retention policy.
     pub async fn cleanup_old_data(&mut self, retention_days: u32) -> Result<()> {
-        let cutoff_time = (current_timestamp() - (retention_days as u64 * 24 * 60 * 60)) as i64;
+        // Use saturating arithmetic to prevent overflow with large retention values
+        let retention_seconds = (retention_days as u64)
+            .saturating_mul(24)
+            .saturating_mul(60)
+            .saturating_mul(60);
+        let cutoff_time = current_timestamp().saturating_sub(retention_seconds) as i64;
         info!(
             "Cleaning up data older than {} days (before timestamp: {})",
             retention_days, cutoff_time
