@@ -28,6 +28,10 @@ pub(super) fn create_table(conn: &Connection) -> Result<()> {
             successful_queries INTEGER NOT NULL,
             failed_queries INTEGER NOT NULL,
             target_id TEXT,
+            avg_value REAL,
+            min_value REAL,
+            max_value REAL,
+            json_truncated_count INTEGER NOT NULL DEFAULT 0,
             received_at INTEGER DEFAULT (strftime('%s', 'now')),
             FOREIGN KEY (agent_id) REFERENCES agents (agent_id),
             UNIQUE(agent_id, task_name, period_start, period_end)
@@ -50,6 +54,21 @@ pub(super) fn create_table(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // Migration: add new columns to existing tables
+    let _ = conn.execute(
+        "ALTER TABLE agg_metric_sql_query ADD COLUMN avg_value REAL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agg_metric_sql_query ADD COLUMN min_value REAL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agg_metric_sql_query ADD COLUMN max_value REAL",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE agg_metric_sql_query ADD COLUMN json_truncated_count INTEGER NOT NULL DEFAULT 0", []);
+
     Ok(())
 }
 
@@ -63,8 +82,11 @@ pub(super) fn store_metric(
 ) -> Result<()> {
     tx.execute(
         r#"
-        INSERT INTO agg_metric_sql_query (agent_id, task_name, period_start, period_end, sample_count, success_rate_percent, avg_total_time_ms, max_total_time_ms, avg_row_count, max_row_count, successful_queries, failed_queries, target_id)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        INSERT INTO agg_metric_sql_query
+        (agent_id, task_name, period_start, period_end, sample_count, success_rate_percent,
+         avg_total_time_ms, max_total_time_ms, avg_row_count, max_row_count,
+         successful_queries, failed_queries, target_id, avg_value, min_value, max_value, json_truncated_count)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         "#,
         params![
             agent_id,
@@ -80,6 +102,10 @@ pub(super) fn store_metric(
             sql_data.successful_queries,
             sql_data.failed_queries,
             sql_data.target_id,
+            sql_data.avg_value,
+            sql_data.min_value,
+            sql_data.max_value,
+            sql_data.json_truncated_count,
         ],
     )?;
     Ok(())

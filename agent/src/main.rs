@@ -36,6 +36,8 @@ mod task_sql;
 mod task_tcp;
 mod task_tls;
 mod tasks;
+#[cfg(test)]
+mod tests;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -1112,15 +1114,4 @@ async fn main() -> Result<()> {
     agent.shutdown().await;
     info!("Agent shutdown complete");
     Ok(())
-}
-
-// Unit tests for the main module.
-#[cfg(test)]
-mod tests {
-    #[tokio::test]
-    async fn test_agent_creation() {
-        // This test is disabled because Agent::new now requires valid config files
-        // and performs full initialization including database setup.
-        // TODO: Create proper test fixtures for integration testing
-    }
 }

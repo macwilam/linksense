@@ -37,6 +37,18 @@ pub fn default_sql_timeout() -> u32 {
     30
 }
 
+/// Default maximum JSON result size for SQL queries (64 KB)
+#[cfg(feature = "sql-tasks")]
+pub fn default_sql_json_max_size() -> usize {
+    65536
+}
+
+/// Default maximum rows for SQL JSON mode (1000 rows)
+#[cfg(feature = "sql-tasks")]
+pub fn default_sql_max_rows() -> usize {
+    1000
+}
+
 // Server configuration defaults
 
 /// Default bandwidth test size (10 MB)

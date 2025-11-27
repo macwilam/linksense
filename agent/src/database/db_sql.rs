@@ -28,7 +28,12 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
             row_count INTEGER,
             success BOOLEAN NOT NULL,
             error TEXT,
-            target_id TEXT
+            target_id TEXT,
+            mode TEXT NOT NULL DEFAULT 'value',
+            value REAL,
+            json_result TEXT,
+            json_truncated BOOLEAN NOT NULL DEFAULT 0,
+            column_count INTEGER
         )
         "#,
         [],
@@ -51,6 +56,10 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
             successful_queries INTEGER NOT NULL,
             failed_queries INTEGER NOT NULL,
             target_id TEXT,
+            avg_value REAL,
+            min_value REAL,
+            max_value REAL,
+            json_truncated_count INTEGER NOT NULL DEFAULT 0,
             UNIQUE(task_name, period_start, period_end)
         )
         "#,
@@ -71,6 +80,39 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // Add new columns to existing tables if they don't exist (migration)
+    // SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we ignore errors
+    let _ = conn.execute(
+        "ALTER TABLE raw_metric_sql_query ADD COLUMN mode TEXT NOT NULL DEFAULT 'value'",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE raw_metric_sql_query ADD COLUMN value REAL", []);
+    let _ = conn.execute(
+        "ALTER TABLE raw_metric_sql_query ADD COLUMN json_result TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE raw_metric_sql_query ADD COLUMN json_truncated BOOLEAN NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE raw_metric_sql_query ADD COLUMN column_count INTEGER",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agg_metric_sql_query ADD COLUMN avg_value REAL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agg_metric_sql_query ADD COLUMN min_value REAL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE agg_metric_sql_query ADD COLUMN max_value REAL",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE agg_metric_sql_query ADD COLUMN json_truncated_count INTEGER NOT NULL DEFAULT 0", []);
+
     Ok(())
 }
 
@@ -81,10 +123,12 @@ pub(super) fn store_raw_metric(
     metric: &MetricData,
     sql_data: &RawSqlQueryMetric,
 ) -> Result<i64> {
-    let row_id = conn.execute(
+    conn.execute(
         r#"
-        INSERT INTO raw_metric_sql_query (task_name, timestamp, total_time_ms, row_count, success, error, target_id)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        INSERT INTO raw_metric_sql_query
+        (task_name, timestamp, total_time_ms, row_count, success, error, target_id,
+         mode, value, json_result, json_truncated, column_count)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         "#,
         params![
             metric.task_name,
@@ -93,11 +137,17 @@ pub(super) fn store_raw_metric(
             sql_data.row_count.map(|c| c as i64),
             sql_data.success,
             sql_data.error,
-            sql_data.target_id
+            sql_data.target_id,
+            sql_data.mode.as_str(),
+            sql_data.value,
+            sql_data.json_result,
+            sql_data.json_truncated,
+            sql_data.column_count,
         ],
     )?;
+    let row_id = conn.last_insert_rowid();
     debug!("Stored SQL query metric with ID: {}", row_id);
-    Ok(row_id as i64)
+    Ok(row_id)
 }
 
 /// Generate aggregated SQL query metrics for a time period
@@ -122,7 +172,11 @@ pub(super) fn generate_aggregated_metrics(
              WHERE task_name = ?1 AND timestamp >= ?2 AND timestamp < ?3
              AND target_id IS NOT NULL
              ORDER BY timestamp ASC
-             LIMIT 1) as first_target_id
+             LIMIT 1) as first_target_id,
+            AVG(CASE WHEN success = 1 AND value IS NOT NULL THEN value END) as avg_value,
+            MIN(CASE WHEN success = 1 AND value IS NOT NULL THEN value END) as min_value,
+            MAX(CASE WHEN success = 1 AND value IS NOT NULL THEN value END) as max_value,
+            SUM(CASE WHEN json_truncated = 1 THEN 1 ELSE 0 END) as json_truncated_count
         FROM raw_metric_sql_query
         WHERE task_name = ?1 AND timestamp >= ?2 AND timestamp < ?3
         "#,
@@ -145,6 +199,10 @@ pub(super) fn generate_aggregated_metrics(
             };
 
             let target_id: Option<String> = row.get("first_target_id").ok();
+            let avg_value: Option<f64> = row.get("avg_value").ok();
+            let min_value: Option<f64> = row.get("min_value").ok();
+            let max_value: Option<f64> = row.get("max_value").ok();
+            let json_truncated_count: i64 = row.get("json_truncated_count").unwrap_or(0);
 
             Ok(Some(AggregatedSqlQueryMetric {
                 success_rate_percent,
@@ -155,6 +213,10 @@ pub(super) fn generate_aggregated_metrics(
                 successful_queries: successful_queries as u32,
                 failed_queries: failed_queries as u32,
                 target_id,
+                avg_value,
+                min_value,
+                max_value,
+                json_truncated_count: json_truncated_count as u32,
             }))
         },
     )?;
@@ -184,8 +246,10 @@ pub(super) fn store_aggregated_metric(
     conn.execute(
         r#"
         INSERT OR REPLACE INTO agg_metric_sql_query
-        (task_name, period_start, period_end, sample_count, success_rate_percent, avg_total_time_ms, max_total_time_ms, avg_row_count, max_row_count, successful_queries, failed_queries, target_id)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        (task_name, period_start, period_end, sample_count, success_rate_percent,
+         avg_total_time_ms, max_total_time_ms, avg_row_count, max_row_count,
+         successful_queries, failed_queries, target_id, avg_value, min_value, max_value, json_truncated_count)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         "#,
         params![
             metrics.task_name,
@@ -199,7 +263,11 @@ pub(super) fn store_aggregated_metric(
             sql_data.max_row_count as i64,
             sql_data.successful_queries,
             sql_data.failed_queries,
-            sql_data.target_id
+            sql_data.target_id,
+            sql_data.avg_value,
+            sql_data.min_value,
+            sql_data.max_value,
+            sql_data.json_truncated_count,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -215,7 +283,7 @@ pub(super) fn load_aggregated_metric(
         "SELECT task_name, period_start, period_end, sample_count,
                 success_rate_percent, avg_total_time_ms, max_total_time_ms,
                 avg_row_count, max_row_count, successful_queries,
-                failed_queries, target_id
+                failed_queries, target_id, avg_value, min_value, max_value, json_truncated_count
          FROM agg_metric_sql_query WHERE id = ?1",
     )?;
 
@@ -235,6 +303,10 @@ pub(super) fn load_aggregated_metric(
                 successful_queries: row.get(9)?,
                 failed_queries: row.get(10)?,
                 target_id: row.get(11).ok(),
+                avg_value: row.get(12).ok(),
+                min_value: row.get(13).ok(),
+                max_value: row.get(14).ok(),
+                json_truncated_count: row.get::<_, i64>(15).unwrap_or(0) as u32,
             }),
         })
     });

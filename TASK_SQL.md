@@ -1,69 +1,85 @@
 # SQL Query Task
 
-The **SQL Query** task monitors database health and query performance by executing SQL statements and measuring their response time. It's designed to ensure database availability and detect performance degradation before it impacts applications.
+The **SQL Query** task monitors database health and query performance by executing SQL statements and measuring their response time. It supports two execution modes: **Value mode** for extracting numeric metrics and **JSON mode** for capturing full query results.
 
 **Note**: This task requires the `sql-tasks` feature flag to be enabled during compilation.
 
 ## Implementation Details
 
-### Crate: `sqlx`
-**Link**: [sqlx on crates.io](https://crates.io/crates/sqlx)
+### Crate: `rsql_drivers`
+**Link**: [rsql_drivers on crates.io](https://crates.io/crates/rsql_drivers)
 
-This task uses **`sqlx`**, a pure Rust async SQL toolkit and database driver.
+This task uses **`rsql_drivers`**, a Rust SQL driver abstraction layer.
 
 **Key Characteristics**:
 - **Async/Non-blocking**: Built on Tokio, no thread blocking during queries
-- **Multi-Database Support**: PostgreSQL, MySQL, SQLite via feature flags
-- **Runtime Query Execution**: Queries are strings, not compile-time checked
-- **Connection Pooling**: Automatic connection management (not used, single connection per task)
-- **Type Mapping**: Automatic conversion between SQL and Rust types
-- **No ORM**: Direct SQL execution, not an Object-Relational Mapper
+- **Multi-Database Support**: PostgreSQL, MySQL, SQLite, and more via unified interface
+- **Runtime Query Execution**: Queries are strings executed at runtime
+- **Result Set Access**: Full access to query results (columns, rows, values)
+- **Type-Safe Values**: `Value` enum provides safe access to database values
 
 **Consequences**:
 - ✅ **Database Flexibility**: Single codebase supports multiple database engines
 - ✅ **Async Performance**: Non-blocking queries allow high concurrency
+- ✅ **Full Result Access**: Can extract values and serialize to JSON
 - ✅ **Pure Rust**: No C dependencies, easier cross-compilation
-- ✅ **Production Ready**: Used by many production Rust applications
-- ⚠️ **Feature Compilation**: Must compile with specific database drivers
+- ⚠️ **Feature Compilation**: Must compile with `sql-tasks` feature
 - ⚠️ **No Query Validation**: SQL syntax errors only detected at runtime
-- ⚠️ **Driver Limitations**: Supported databases determined by `sqlx` capabilities
 
 ### Supported Databases
 
 **PostgreSQL** (`database_type = "postgres"`):
-- **Driver**: `sqlx` with `runtime-tokio-rustls` feature
-- **Protocol**: PostgreSQL wire protocol (native, not libpq)
-- **Versions**: PostgreSQL 9.5+, supports modern features
-- **SSL/TLS**: Built-in via `rustls` (no OpenSSL dependency)
+- **Protocol**: PostgreSQL wire protocol (native)
+- **Versions**: PostgreSQL 9.5+
+- **SSL/TLS**: Supported
 
 **MySQL** (`database_type = "mysql"`):
-- **Driver**: `sqlx` with `runtime-tokio-rustls` feature
-- **Protocol**: MySQL wire protocol (native, not libmysqlclient)
+- **Protocol**: MySQL wire protocol (native)
 - **Versions**: MySQL 5.6+, MariaDB 10.2+
-- **SSL/TLS**: Built-in via `rustls`
+- **SSL/TLS**: Supported
 
 **SQLite** (`database_type = "sqlite"`):
-- **Driver**: `sqlx` with bundled SQLite (via `rusqlite`)
 - **File Access**: Direct file-based database access
 - **Versions**: SQLite 3.x
 - **Note**: Local file only, no client-server
 
 **Databases NOT Supported**:
-- ❌ **Oracle**: Not supported by `sqlx`
-- ❌ **SQL Server (MSSQL)**: Experimental support only, not production-ready
-- ❌ **MongoDB**: Not a SQL database (different driver needed)
-- ❌ **Cassandra**: Not a SQL database
+- ❌ **Oracle**: Not supported
+- ❌ **SQL Server (MSSQL)**: Not supported
+- ❌ **MongoDB**: Not a SQL database
+
+### Query Execution Modes
+
+The SQL task supports two execution modes:
+
+#### Value Mode (Default)
+Extracts a single numeric value from the first row, first column of the query result. Ideal for monitoring metrics like counts, gauges, and numeric indicators.
+
+```
+Query: SELECT COUNT(*) FROM users
+Result: row_count=1, value=42.0
+```
+
+#### JSON Mode
+Returns the full query result as a JSON array of objects. Ideal for capturing structured data, recent records, or diagnostic information.
+
+```
+Query: SELECT id, name FROM users LIMIT 3
+Result: [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}, {"id": 3, "name": "Charlie"}]
+```
 
 ### Query Execution Flow
 
-```rust
+```
 1. Parse database_url and create connection
 2. Authenticate with database server
 3. Send SQL query string to database
 4. Wait for response (async, with timeout)
-5. Fetch all rows from result set
-6. Count rows, measure total execution time
-7. Close connection (or return to pool)
+5. Based on mode:
+   - Value mode: Extract first cell as numeric, count all rows
+   - JSON mode: Collect rows up to max_rows, convert to JSON
+6. Apply size limits (JSON mode) and truncate if needed
+7. Close connection
 ```
 
 **Timing Measurement**:
@@ -72,7 +88,7 @@ This task uses **`sqlx`**, a pure Rust async SQL toolkit and database driver.
   - Query parsing and planning
   - Query execution on database
   - Result set transfer
-  - Row counting on agent side
+  - Value extraction or JSON serialization
 
 ### Connection Handling
 
@@ -87,11 +103,6 @@ Each task execution:
 - Simpler implementation, no pool management
 - Avoids stale connection issues
 
-**For Production Monitoring**, this means:
-- Each query tests full connection establishment (good for health checks)
-- Connection overhead included in timing (may add 10-50ms)
-- Database connection limits should account for agent connections
-
 ### Security Considerations
 
 **Credential Storage**:
@@ -104,33 +115,15 @@ database_url = "postgresql://user:password@host/db"
 1. Use read-only database accounts
 2. Restrict config file permissions (`chmod 600`)
 3. Use network firewalls to limit database access
-4. Consider secrets management for production (Vault, AWS Secrets Manager)
+4. Consider secrets management for production
 
 **SQL Injection Protection**:
 - Static queries only (no user input)
 - No string interpolation in queries
-- Parameterization not available (queries are fixed strings)
-
-### Why `sqlx` Instead of Alternatives?
-
-**vs. `diesel` (ORM)**:
-- Diesel requires compile-time schema, too heavy for monitoring
-- Diesel is sync-only, would block Tokio runtime
-- sqlx is lighter-weight for simple query execution
-
-**vs. Native drivers** (`rust-postgres`, `mysql_async`):
-- sqlx provides unified interface across databases
-- Easier to support multiple database types
-- Built-in async support
-
-**vs. `tokio-postgres`, `tokio-mysql`**:
-- sqlx includes these internally
-- Provides higher-level abstractions
-- Better error handling
 
 ## Configuration
 
-### Basic Configuration
+### Basic Configuration (Value Mode)
 
 ```toml
 [[tasks]]
@@ -138,24 +131,30 @@ type = "sql_query"
 name = "Database Health Check"
 schedule_seconds = 60
 query = "SELECT 1"
-database_url = "postgresql://user:password@localhost:5432/mydb"
+database_url = "localhost:5432/mydb"
 database_type = "postgres"
+username = "monitor"
+password = "secret"
 timeout_seconds = 30
+# mode = "value"  # Default, can be omitted
 ```
 
-### Advanced Configuration
+### JSON Mode Configuration
 
 ```toml
 [[tasks]]
 type = "sql_query"
-name = "Active Users Count"
-schedule_seconds = 120
-query = "SELECT COUNT(*) FROM users WHERE last_active > NOW() - INTERVAL '1 hour'"
-database_url = "postgresql://monitoring:secret@db.example.com:5432/production"
+name = "Recent Errors Log"
+schedule_seconds = 300
+query = "SELECT id, message, created_at FROM errors ORDER BY created_at DESC LIMIT 50"
+database_url = "localhost:5432/mydb"
 database_type = "postgres"
-username = "monitoring"          # Optional: override URL username
-password = "secret"              # Optional: override URL password
-timeout_seconds = 45
+username = "monitor"
+password = "secret"
+mode = "json"
+max_json_size_bytes = 131072    # 128 KB limit
+max_rows = 100                   # Maximum rows to return
+timeout_seconds = 60
 ```
 
 ### Configuration Parameters
@@ -165,81 +164,143 @@ timeout_seconds = 45
 | `type` | string | ✅ | - | Must be `"sql_query"` |
 | `name` | string | ✅ | - | Unique identifier for this task |
 | `schedule_seconds` | integer | ✅ | - | Interval between queries (≥60 seconds, enforced) |
-| `query` | string | ✅ | - | SQL query to execute (SELECT recommended) |
-| `database_url` | string | ✅ | - | Database connection URL |
+| `query` | string | ✅ | - | SQL query to execute |
+| `database_url` | string | ✅ | - | Database host/path (without protocol prefix) |
 | `database_type` | string | ✅ | - | Database type: `postgres`, `mysql`, `sqlite` |
-| `username` | string | ❌ | - | Optional username (overrides URL) |
-| `password` | string | ❌ | - | Optional password (overrides URL) |
+| `username` | string | ❌ | - | Database username |
+| `password` | string | ❌ | - | Database password |
 | `timeout_seconds` | integer | ❌ | 30 | Query timeout (seconds) |
 | `timeout` | integer | ❌ | - | Task-level timeout override (seconds) |
-| `target_id` | string | ❌ | - | Optional identifier for grouping/filtering targets (e.g., "db-primary", "db-replica") |
+| `target_id` | string | ❌ | - | Optional identifier for grouping/filtering |
+| `mode` | string | ❌ | `"value"` | Execution mode: `"value"` or `"json"` |
+| `max_json_size_bytes` | integer | ❌ | 65536 | Maximum JSON result size (JSON mode, max: 1MB) |
+| `max_rows` | integer | ❌ | 1000 | Maximum rows to return (JSON mode, max: 10000) |
 
 ### Database Connection URLs
 
 #### PostgreSQL
 ```toml
-database_url = "postgresql://username:password@hostname:5432/database_name"
+database_url = "localhost:5432/database_name"
 database_type = "postgres"
-
-# With SSL
-database_url = "postgresql://user:pass@host:5432/db?sslmode=require"
+username = "user"
+password = "password"
 ```
 
 #### MySQL
 ```toml
-database_url = "mysql://username:password@hostname:3306/database_name"
+database_url = "localhost:3306/database_name"
 database_type = "mysql"
-
-# With SSL
-database_url = "mysql://user:pass@host:3306/db?ssl-mode=required"
+username = "user"
+password = "password"
 ```
 
 #### SQLite
 ```toml
-database_url = "sqlite:///path/to/database.db"
+database_url = "/path/to/database.db"
 database_type = "sqlite"
-
-# In-memory database
-database_url = "sqlite::memory:"
 ```
 
 ### Configuration Examples
 
-#### Simple Health Check
+#### Simple Health Check (Value Mode)
 ```toml
 [[tasks]]
 type = "sql_query"
 name = "Postgres Health"
 schedule_seconds = 60
 query = "SELECT 1"
-database_url = "postgresql://monitor:secret@localhost/postgres"
+database_url = "localhost:5432/postgres"
 database_type = "postgres"
+username = "monitor"
+password = "secret"
 ```
 
-#### Monitor Table Row Count
+#### Monitor Active Connections (Value Mode)
+```toml
+[[tasks]]
+type = "sql_query"
+name = "Active Database Connections"
+schedule_seconds = 60
+query = "SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active'"
+database_url = "localhost:5432/postgres"
+database_type = "postgres"
+username = "admin"
+password = "secret"
+mode = "value"
+```
+
+#### Monitor Table Row Count (Value Mode)
 ```toml
 [[tasks]]
 type = "sql_query"
 name = "Orders Table Size"
 schedule_seconds = 300
 query = "SELECT COUNT(*) FROM orders"
-database_url = "postgresql://readonly:pass@db.prod.com:5432/sales"
+database_url = "db.prod.com:5432/sales"
 database_type = "postgres"
+username = "readonly"
+password = "pass"
 timeout_seconds = 60
 ```
 
-#### Track Active Sessions
+#### Recent Error Logs (JSON Mode)
 ```toml
 [[tasks]]
 type = "sql_query"
-name = "Active Database Connections"
-schedule_seconds = 120
-query = "SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active'"
-database_url = "postgresql://admin:secret@localhost/postgres"
+name = "Recent Application Errors"
+schedule_seconds = 300
+query = "SELECT id, level, message, created_at FROM logs WHERE level = 'ERROR' ORDER BY created_at DESC LIMIT 20"
+database_url = "localhost:5432/app"
 database_type = "postgres"
+username = "monitor"
+password = "secret"
+mode = "json"
+max_json_size_bytes = 65536
+max_rows = 20
 ```
 
-#### Replica Lag Detection
+#### Current User Sessions (JSON Mode)
+```toml
+[[tasks]]
+type = "sql_query"
+name = "Active User Sessions"
+schedule_seconds = 120
+query = "SELECT user_id, ip_address, started_at FROM sessions WHERE expires_at > NOW() ORDER BY started_at DESC"
+database_url = "localhost:3306/webapp"
+database_type = "mysql"
+username = "monitor"
+password = "secret"
+mode = "json"
+max_rows = 100
+```
+
+#### Database Lock Monitoring (JSON Mode)
+```toml
+[[tasks]]
+type = "sql_query"
+name = "Database Locks"
+schedule_seconds = 60
+query = """
+SELECT
+  pid,
+  usename,
+  query,
+  state,
+  wait_event_type,
+  wait_event
+FROM pg_stat_activity
+WHERE wait_event IS NOT NULL
+"""
+database_url = "localhost:5432/postgres"
+database_type = "postgres"
+username = "admin"
+password = "secret"
+mode = "json"
+max_rows = 50
+timeout_seconds = 10
+```
+
+#### Replica Lag Detection (Value Mode)
 ```toml
 # Primary database
 [[tasks]]
@@ -247,8 +308,11 @@ type = "sql_query"
 name = "Primary - Latest Order ID"
 schedule_seconds = 300
 query = "SELECT MAX(id) FROM orders"
-database_url = "postgresql://user:pass@primary.db.com/sales"
+database_url = "primary.db.com:5432/sales"
 database_type = "postgres"
+username = "user"
+password = "pass"
+target_id = "db-primary"
 
 # Read replica
 [[tasks]]
@@ -256,47 +320,11 @@ type = "sql_query"
 name = "Replica - Latest Order ID"
 schedule_seconds = 300
 query = "SELECT MAX(id) FROM orders"
-database_url = "postgresql://user:pass@replica.db.com/sales"
+database_url = "replica.db.com:5432/sales"
 database_type = "postgres"
-
-# Compare results to detect lag
-```
-
-#### Monitor Critical Business Metrics
-```toml
-[[tasks]]
-type = "sql_query"
-name = "Recent Transactions"
-schedule_seconds = 180
-query = """
-SELECT COUNT(*)
-FROM transactions
-WHERE created_at > NOW() - INTERVAL '5 minutes'
-  AND status = 'completed'
-"""
-database_url = "mysql://analytics:pass@analytics.db.com:3306/payments"
-database_type = "mysql"
-```
-
-#### Slow Query Detection (Synthetic)
-```toml
-[[tasks]]
-type = "sql_query"
-name = "Complex Report Query"
-schedule_seconds = 600
-query = """
-SELECT
-  DATE(created_at) as date,
-  COUNT(*) as orders,
-  SUM(total) as revenue
-FROM orders
-WHERE created_at > NOW() - INTERVAL '30 days'
-GROUP BY DATE(created_at)
-ORDER BY date DESC
-"""
-database_url = "postgresql://reporting:pass@warehouse.db.com/analytics"
-database_type = "postgres"
-timeout_seconds = 120
+username = "user"
+password = "pass"
+target_id = "db-replica"
 ```
 
 ## Metrics
@@ -315,7 +343,11 @@ Captured for each individual SQL query execution:
 | `success` | BOOLEAN | Whether query succeeded (1) or failed (0) |
 | `error` | TEXT | Error message if query failed (NULL on success) |
 | `target_id` | TEXT | Optional target identifier from task configuration |
-
+| `mode` | TEXT | Execution mode: `"value"` or `"json"` |
+| `value` | REAL | Extracted numeric value (Value mode only) |
+| `json_result` | TEXT | JSON result string (JSON mode only) |
+| `json_truncated` | BOOLEAN | Whether JSON was truncated due to size limit |
+| `column_count` | INTEGER | Number of columns in the result |
 
 ### Aggregated Metrics (`agg_metric_sql_query`)
 
@@ -335,8 +367,11 @@ Captured for each individual SQL query execution:
 | `max_row_count` | INTEGER | Maximum rows returned in any query |
 | `successful_queries` | INTEGER | Count of successful queries |
 | `failed_queries` | INTEGER | Count of failed queries |
-| `target_id` | TEXT | Optional target identifier from task configuration |
-
+| `target_id` | TEXT | Optional target identifier |
+| `avg_value` | REAL | Average extracted value (Value mode only) |
+| `min_value` | REAL | Minimum extracted value (Value mode only) |
+| `max_value` | REAL | Maximum extracted value (Value mode only) |
+| `json_truncated_count` | INTEGER | Count of truncated JSON responses |
 
 ### Metrics Interpretation
 
@@ -347,10 +382,14 @@ Captured for each individual SQL query execution:
 - **1-5s**: Slow (needs optimization)
 - **> 5s**: Very slow (critical performance issue)
 
-#### Row Count Patterns
-- **Consistent row_count**: Stable data, expected results
-- **Growing row_count**: Data growth (normal for COUNT queries on active tables)
-- **Sudden row_count change**: Investigate (data deleted, query changed, issue)
+#### Value Mode Metrics
+- **avg_value**: Track trends in numeric metrics over time
+- **min_value/max_value**: Identify outliers and anomalies
+- **value = NULL**: Query returned non-numeric or empty result
+
+#### JSON Mode Metrics
+- **json_truncated = true**: Result exceeded size limit, some rows omitted
+- **json_truncated_count**: Number of times truncation occurred in period
 
 #### Success Rate
 - **100%**: Healthy database connectivity
@@ -365,6 +404,7 @@ WARNING:
   - avg_total_time_ms > 1000
   - max_total_time_ms > 5000
   - success_rate_percent < 95
+  - json_truncated_count > 0 (may indicate need for larger limit)
 
 CRITICAL:
   - avg_total_time_ms > 5000
@@ -379,36 +419,54 @@ CRITICAL:
 Executes SQL queries against databases and measures:
 - **Query Execution Success**: Can the database execute queries?
 - **Response Time**: How long do queries take to complete?
-- **Result Set Size**: How many rows are returned?
+- **Result Values**: What values are returned? (Value mode)
+- **Result Data**: What records exist? (JSON mode)
 - **Database Availability**: Is the database reachable and responsive?
 
-### Strong Sides
+### Value Mode Use Cases
 
-1. **Application-Level Monitoring**: Tests actual database operations, not just network connectivity
-2. **Performance Tracking**: Measures real query execution time including database processing
-3. **Multi-Database Support**: Works with PostgreSQL, MySQL, SQLite, and others
-4. **Proactive Detection**: Catches slow queries before they cause application timeouts
-5. **Connection Validation**: Ensures connection pool and authentication work correctly
-6. **Data Consistency Checks**: Can validate expected data exists
+1. **Metric Collection**: Extract numeric KPIs from databases
+   - Active user count
+   - Queue depth
+   - Pending orders
+   - Error counts
 
-### Typical Use Cases
+2. **Threshold Monitoring**: Track values for alerting
+   - Disk usage percentage
+   - Replication lag seconds
+   - Connection count
 
-- **Database Health Monitoring**: Verify primary/replica databases are responding
-- **Query Performance Tracking**: Monitor critical query execution times
-- **Connection Pool Health**: Ensure database connections are available
-- **Read Replica Lag Detection**: Compare query results across replicas
-- **Data Validation**: Confirm expected records exist (user count, inventory levels)
-- **Slow Query Detection**: Alert when queries exceed performance thresholds
-- **Failover Verification**: Test database failover/high availability works
+3. **Performance Gauges**: Monitor database internals
+   - Cache hit ratio
+   - Query execution time
+   - Lock wait time
+
+### JSON Mode Use Cases
+
+1. **Diagnostic Data**: Capture detailed information for troubleshooting
+   - Recent error messages
+   - Slow query log entries
+   - Active sessions
+
+2. **Audit Trail**: Record state snapshots
+   - Current user sessions
+   - Pending transactions
+   - Configuration values
+
+3. **Health Details**: Capture structured health data
+   - Database lock information
+   - Replication status
+   - Table statistics
 
 ### Limitations
 
 - **Feature Flag Required**: Must compile with `--features sql-tasks`
-- **Read-Only Recommended**: Only SELECT queries should be used (no INSERT/UPDATE/DELETE)
-- **Minimum Schedule**: Must run ≥60 seconds apart (enforced by validation)
+- **Read-Only Recommended**: Only SELECT queries should be used
+- **Minimum Schedule**: Must run ≥60 seconds apart (enforced)
 - **Credentials in Config**: Database passwords stored in configuration files
-- **Single Query per Task**: Each task executes one query (create multiple tasks for multiple queries)
-- **No Transaction Control**: Queries auto-commit, no BEGIN/COMMIT/ROLLBACK
+- **Single Query per Task**: Each task executes one query
+- **JSON Size Limit**: Maximum 1MB for JSON results
+- **No Transaction Control**: Queries auto-commit
 
 ## Performance Characteristics
 
@@ -416,9 +474,9 @@ Executes SQL queries against databases and measures:
 
 **Agent**:
 - **CPU**: Low (1-3% during query execution)
-- **Memory**: ~(row_count * row_size) + 10MB
-  - Small result sets (<100 rows): ~1-5 MB
-  - Large result sets (>1000 rows): ~10-50 MB
+- **Memory**: 
+  - Value mode: Minimal (~1-5 MB)
+  - JSON mode: ~(row_count * row_size) + serialization overhead
 - **Network**: Minimal (query + result set)
 - **Disk**: Batch writes to SQLite
 
@@ -432,13 +490,13 @@ Executes SQL queries against databases and measures:
 - **Indexed lookups**: 10-100ms
 - **Aggregations/joins**: 100-1000ms
 - **Complex reports**: 1-10s
-- **Timeout**: Configurable (default 30s) - **Now properly enforced** with `tokio::time::timeout()` to prevent indefinite hangs
+- **Timeout**: Configurable (default 30s, properly enforced)
 
-### Scalability
-- Can monitor **10-20 databases** simultaneously
-- Queries execute sequentially (one at a time per task)
-- Recommended schedule: 60-300 seconds
-- For high-frequency monitoring, use connection pooling at database level
+### JSON Mode Considerations
+- Large result sets consume more memory
+- `max_rows` prevents memory exhaustion
+- `max_json_size_bytes` limits storage/transmission size
+- Truncation uses binary search for efficiency
 
 ## Security Considerations
 
@@ -466,11 +524,7 @@ Executes SQL queries against databases and measures:
    chown monitoring-agent:monitoring-agent /path/to/tasks.toml
    ```
 
-3. **Use Secrets Management** (Advanced):
-   - Store credentials in HashiCorp Vault, AWS Secrets Manager, etc.
-   - Inject at runtime via environment variables (requires code modification)
-
-4. **Network Isolation**:
+3. **Network Isolation**:
    - Use firewall rules to restrict agent → database connections
    - Use VPN/private networks for production databases
 
@@ -485,10 +539,12 @@ query = "SELECT COUNT(*) FROM users"
 query = "DELETE FROM old_logs WHERE created_at < NOW() - INTERVAL '90 days'"
 ```
 
-**Avoid dynamic SQL**:
-- Don't include user input in queries
-- No string concatenation from external sources
-- Parameterized queries not supported (static queries only)
+### JSON Mode Data Sensitivity
+
+Be cautious about what data is captured in JSON mode:
+- Avoid capturing passwords or tokens
+- Consider data retention policies
+- JSON results are stored in agent's local database
 
 ## Troubleshooting
 
@@ -500,7 +556,6 @@ query = "DELETE FROM old_logs WHERE created_at < NOW() - INTERVAL '90 days'"
 - Database server unreachable
 - Firewall blocking connection
 - Database under heavy load
-- Connection pool exhausted
 **Solutions**:
 ```bash
 # Test connection manually
@@ -518,53 +573,45 @@ timeout_seconds = 60
 **Causes**:
 - Incorrect username/password
 - User doesn't have SELECT permission
-- pg_hba.conf restricting connections (PostgreSQL)
 **Solutions**:
 ```sql
 -- PostgreSQL: Check user permissions
 SELECT * FROM pg_roles WHERE rolname = 'monitoring';
-SELECT grantee, privilege_type
-FROM information_schema.role_table_grants
-WHERE grantee = 'monitoring';
 
 -- MySQL: Check user grants
 SHOW GRANTS FOR 'monitoring'@'%';
 ```
 
-#### Slow Query Performance
-**Symptom**: `total_time_ms` consistently high (> 1000ms)
+#### Value Mode Returns NULL
+**Symptom**: `value` field is NULL despite successful query
 **Causes**:
-- Missing indexes
-- Full table scan
-- Database under load
-- Query complexity
+- Query returns non-numeric data in first cell
+- Query returns empty result set
+- First column contains NULL
 **Solutions**:
-```sql
--- PostgreSQL: Analyze query plan
-EXPLAIN ANALYZE SELECT COUNT(*) FROM users;
+```toml
+# Ensure query returns numeric in first column
+query = "SELECT COUNT(*)::float FROM users"
 
--- Add indexes for common filters
-CREATE INDEX idx_users_last_active ON users(last_active);
-
--- MySQL: Check slow query log
-SHOW VARIABLES LIKE 'slow_query_log';
+# Or cast to numeric
+query = "SELECT CAST(value AS DECIMAL) FROM metrics LIMIT 1"
 ```
 
-#### Connection Pool Exhaustion
-**Symptom**: Intermittent "too many connections" errors
-**Cause**: Agent not closing connections properly or database max_connections too low
+#### JSON Truncation
+**Symptom**: `json_truncated = true` frequently
+**Causes**:
+- Result set too large for configured limit
 **Solutions**:
-```sql
--- PostgreSQL: Check connection limits
-SELECT * FROM pg_stat_activity;
-SHOW max_connections;
+```toml
+# Increase size limit (max 1MB)
+max_json_size_bytes = 524288  # 512 KB
 
--- Increase max connections (requires restart)
-ALTER SYSTEM SET max_connections = 200;
+# Or reduce rows in query
+query = "SELECT ... LIMIT 50"  # Instead of LIMIT 1000
 
--- MySQL: Check connections
-SHOW PROCESSLIST;
-SHOW VARIABLES LIKE 'max_connections';
+# Or increase max_rows and size together
+max_rows = 500
+max_json_size_bytes = 262144  # 256 KB
 ```
 
 ### Debugging Tips
@@ -576,81 +623,54 @@ psql -h hostname -U username -d database -c "SELECT COUNT(*) FROM users" -c "\ti
 
 # MySQL
 mysql -h hostname -u username -p -D database -e "SELECT COUNT(*) FROM users"
-
-# Measure execution time
-time psql -h hostname -U username -d database -c "SELECT 1"
 ```
 
-**Analyze performance patterns:**
+**Check Value extraction:**
 ```sql
-SELECT
-  timestamp,
-  total_time_ms,
-  row_count,
-  success,
-  error
-FROM raw_metric_sql_query
-WHERE task_name = 'Orders Count'
-ORDER BY timestamp DESC
-LIMIT 50;
+-- Ensure first column is numeric
+SELECT pg_typeof(column_name) FROM table LIMIT 1;
 ```
 
-**Enable database query logging:**
+**Analyze JSON size:**
 ```sql
--- PostgreSQL: Enable slow query log
-ALTER SYSTEM SET log_min_duration_statement = 1000;  -- Log queries > 1s
-SELECT pg_reload_conf();
-
--- MySQL: Enable slow query log
-SET GLOBAL slow_query_log = 'ON';
-SET GLOBAL long_query_time = 1;  -- Log queries > 1s
+-- Estimate JSON size before configuring
+SELECT LENGTH(json_agg(t)::text)
+FROM (SELECT * FROM table LIMIT 100) t;
 ```
 
 ## Best Practices
 
-1. **Use Simple Health Check Queries**:
-   ```sql
-   -- Best for availability monitoring
-   SELECT 1
-
-   -- Or check database version
-   SELECT version()
-   ```
-
-2. **Create Dedicated Monitoring Schema** (Optional):
-   ```sql
-   CREATE SCHEMA monitoring;
-
-   CREATE TABLE monitoring.health_check (
-     id SERIAL PRIMARY KEY,
-     check_time TIMESTAMP DEFAULT NOW()
-   );
-
-   -- Query this table instead of production tables
-   SELECT COUNT(*) FROM monitoring.health_check;
-   ```
-
-3. **Set Appropriate Schedules**:
-   - Critical databases: 60-120 seconds
-   - Less critical: 300-600 seconds
-   - Avoid < 60 seconds (enforced minimum)
-
-4. **Monitor Both Speed and Result**:
+1. **Use Value Mode for Metrics**:
    ```toml
-   # Task 1: Fast health check
    [[tasks]]
-   name = "DB Health"
-   query = "SELECT 1"
+   name = "Active Connections"
+   mode = "value"
+   query = "SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active'"
    schedule_seconds = 60
-
-   # Task 2: Business metric
-   [[tasks]]
-   name = "Active Users"
-   query = "SELECT COUNT(*) FROM users WHERE last_active > NOW() - INTERVAL '1 hour'"
-   schedule_seconds = 300
    ```
 
-5. **Use Indexed Columns in WHERE Clauses**:
+2. **Use JSON Mode for Diagnostics**:
+   ```toml
+   [[tasks]]
+   name = "Current Locks"
+   mode = "json"
+   query = "SELECT * FROM pg_locks WHERE granted = false"
+   schedule_seconds = 300
+   max_rows = 50
+   ```
+
+3. **Set Appropriate Size Limits**:
+   ```toml
+   # Small diagnostic data
+   max_json_size_bytes = 32768   # 32 KB
+   max_rows = 50
+
+   # Larger data exports
+   max_json_size_bytes = 262144  # 256 KB
+   max_rows = 500
+   ```
+
+4. **Use Indexed Columns in WHERE Clauses**:
    ```sql
    -- ✅ GOOD: Uses index on created_at
    SELECT COUNT(*) FROM orders WHERE created_at > NOW() - INTERVAL '1 day'
@@ -659,13 +679,26 @@ SET GLOBAL long_query_time = 1;  -- Log queries > 1s
    SELECT COUNT(*) FROM orders WHERE YEAR(created_at) = 2024
    ```
 
-6. **Set Timeouts Based on Expected Query Time**:
+5. **Set Timeouts Based on Expected Query Time**:
    ```toml
    # Fast query
    timeout_seconds = 10
 
    # Complex aggregation
    timeout_seconds = 60
+   ```
+
+6. **Use target_id for Multi-Database Monitoring**:
+   ```toml
+   [[tasks]]
+   name = "Primary DB Health"
+   target_id = "db-primary"
+   ...
+
+   [[tasks]]
+   name = "Replica DB Health"
+   target_id = "db-replica"
+   ...
    ```
 
 ## Related Documentation

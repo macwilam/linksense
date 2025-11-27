@@ -38,11 +38,4 @@ pub enum MonitoringError {
 }
 
 #[cfg(test)]
-mod tests {
-
-    #[test]
-    fn test_basic_imports() {
-        // Basic smoke test to ensure all modules can be imported
-        // More comprehensive tests will be added in Phase 1.2
-    }
-}
+mod tests;
