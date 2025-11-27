@@ -111,6 +111,18 @@ local_only = true
 | `auto_update_tasks` | No | `false` | Enable automatic config sync from server every 5 minutes |
 | `local_only` | No | `false` | Run in standalone mode without server communication |
 | `metrics_flush_interval_seconds` | No | `5` | Interval between database flushes for buffered metrics (min: 1, max: 60) |
+| `metrics_send_interval_seconds` | No | `30` | How often to push metrics to server |
+| `metrics_batch_size` | No | `50` | Number of metrics to send per batch |
+| `metrics_max_retries` | No | `10` | Maximum retry attempts for failed metric sends |
+| `queue_cleanup_interval_seconds` | No | `3600` | Cleanup interval for sent metrics queue |
+| `data_cleanup_interval_seconds` | No | `86400` | Daily cleanup interval for old data |
+| `max_concurrent_tasks` | No | `50` | Maximum number of concurrent tasks |
+| `http_response_max_size_mb` | No | `100` | Maximum HTTP response body size in MB |
+| `http_client_timeout_seconds` | No | `30` | HTTP client timeout for server communication |
+| `database_busy_timeout_seconds` | No | `5` | SQLite database busy timeout |
+| `graceful_shutdown_timeout_seconds` | No | `30` | Wait time for in-flight tasks during shutdown |
+| `channel_buffer_size` | No | `1000` | Result channel capacity for task results |
+| `http_client_refresh_interval_seconds` | No | `3600` | Interval for refreshing HTTP clients and TLS connectors |
 
 *Required unless `local_only = true`
 
@@ -148,15 +160,17 @@ All tasks support these parameters:
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `type` | Yes | Task type: `ping`, `http_get`, `http_content`, `dns_query`, `dns_query_doh`, `bandwidth`, `sql_query` |
+| `type` | Yes | Task type: `ping`, `tcp`, `tls_handshake`, `http_get`, `http_content`, `dns_query`, `dns_query_doh`, `bandwidth`, `sql_query` |
 | `name` | Yes | Unique identifier for this task (used in metrics and logs) |
 | `schedule_seconds` | Yes | Interval between executions (minimum varies by task type) |
 
 For task-specific parameters, see the detailed task documentation:
 - [TASK_PING.md](TASK_PING.md) - ICMP ping
+- [TASK_TCP.md](TASK_TCP.md) - TCP port connectivity
+- [TASK_TLS.md](TASK_TLS.md) - TLS handshake and certificate validation
 - [TASK_HTTP_GET.md](TASK_HTTP_GET.md) - HTTP/HTTPS requests
 - [TASK_HTTP_CONTENT.md](TASK_HTTP_CONTENT.md) - HTTP content validation
-- [TASK_DNS.md](TASK_DNS.md) - DNS queries
+- [TASK_DNS.md](TASK_DNS.md) - DNS queries (standard and DNS-over-HTTPS)
 - [TASK_BANDWIDTH.md](TASK_BANDWIDTH.md) - Bandwidth testing
 - [TASK_SQL.md](TASK_SQL.md) - Database queries
 
@@ -223,19 +237,23 @@ The agent uses SQLite for local metric storage with two-tier architecture:
 
 **Raw Metrics Tables** (individual measurements):
 - `raw_metric_ping` - Individual ping measurements
-- `raw_metric_http_get` - Individual HTTP request timings
+- `raw_metric_tcp` - Individual TCP connection tests
+- `raw_metric_tls` - Individual TLS handshake tests
+- `raw_metric_http` - Individual HTTP request timings
 - `raw_metric_http_content` - Individual content check results
-- `raw_metric_dns_query` - Individual DNS query results
+- `raw_metric_dns` - Individual DNS query results
 - `raw_metric_bandwidth` - Individual bandwidth tests
-- `raw_metric_sql_query` - Individual SQL query results
+- `raw_metric_sql_query` - Individual SQL query results (requires sql-tasks feature)
 
 **Aggregated Metrics Tables** (60-second summaries):
 - `agg_metric_ping` - Aggregated ping statistics
-- `agg_metric_http_get` - Aggregated HTTP timings
+- `agg_metric_tcp` - Aggregated TCP connection statistics
+- `agg_metric_tls` - Aggregated TLS handshake statistics
+- `agg_metric_http` - Aggregated HTTP timings
 - `agg_metric_http_content` - Aggregated content checks
-- `agg_metric_dns_query` - Aggregated DNS queries
+- `agg_metric_dns` - Aggregated DNS queries
 - `agg_metric_bandwidth` - Aggregated bandwidth tests
-- `agg_metric_sql_query` - Aggregated SQL queries
+- `agg_metric_sql_query` - Aggregated SQL queries (requires sql-tasks feature)
 
 **Aggregation Process**:
 1. Tasks execute and store raw measurements
@@ -395,18 +413,60 @@ RUST_LOG=debug ./target/release/agent ./agent-config
 
 **Symptom**: Ping tasks fail with permission errors
 
+**Background**: Linux requires special privileges for ICMP sockets. Since kernel 2.6.39, unprivileged users can create ICMP Echo sockets if their group ID falls within the `net.ipv4.ping_group_range` sysctl parameter. By default this is set to `1 0` (disabled).
+
 **Solutions**:
+
+**Option 1: Configure ping_group_range for a specific group (Recommended)**
+
+This is the most secure approach - it grants ICMP privileges only to users in a specific group.
+
+1. Create a dedicated group for the monitoring agent:
+   ```bash
+   sudo groupadd --system linksense
+   ```
+
+2. Find the group ID (GID) of the new group:
+   ```bash
+   getent group linksense
+   # Output example: linksense:x:999:
+   # The GID is 999 in this example
+   ```
+
+3. Edit `/etc/sysctl.conf` and add the following line (replace `999` with your actual GID):
+   ```
+   net.ipv4.ping_group_range = 999 999
+   ```
+
+4. Apply the changes:
+   ```bash
+   sudo sysctl -p
+   ```
+
+5. Add the user running the agent to this group:
+   ```bash
+   sudo usermod -a -G linksense your-agent-user
+   ```
+
+6. Log out and back in (or start a new shell) for group membership to take effect.
+
+**Option 2: Grant capability to binary**
+
+This grants raw socket capability directly to the agent binary. Needs to be re-applied after each recompilation.
+
 ```bash
-# Option 1: Configure system-wide ping group
-echo 'net.ipv4.ping_group_range = 0 2147483647' | sudo tee -a /etc/sysctl.conf
-sudo sysctl -p
-
-# Option 2: Add user to ping group
-sudo usermod -a -G ping $USER
-# Log out and back in
-
-# Option 3: Grant capability to binary
 sudo setcap cap_net_raw+ep ./target/release/agent
+
+# Verify capability was set
+getcap ./target/release/agent
+```
+
+**Option 3: Run as root (Not recommended)**
+
+Running the agent as root works but is discouraged for security reasons.
+
+```bash
+sudo ./target/release/agent /path/to/config
 ```
 
 ### Tasks Not Executing
@@ -422,7 +482,7 @@ cargo run --bin agent -- ./agent-config --validate
 RUST_LOG=agent=debug,scheduler=trace ./target/release/agent ./agent-config
 
 # Query local database
-sqlite3 agent-config/agent.db "SELECT * FROM raw_metric_ping LIMIT 10;"
+sqlite3 data/agent_metrics.db "SELECT * FROM raw_metric_ping LIMIT 10;"
 ```
 
 **Solutions**:

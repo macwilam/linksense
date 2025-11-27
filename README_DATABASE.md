@@ -63,7 +63,7 @@ agents:                id, agent_id, first_seen, last_seen, last_config_checksum
 config_errors:         id, agent_id, timestamp_utc, error_message, received_at
 ```
 
-Pattern applies to all task types: `ping`, `http`, `http_content`, `dns`, `bandwidth`, `sql_query`.
+Pattern applies to all task types: `ping`, `tcp`, `tls`, `http`, `http_content`, `dns`, `bandwidth`, `sql_query`.
 
 ## Performance
 

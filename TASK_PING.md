@@ -253,23 +253,40 @@ Sends ICMP Echo Request packets to a target host and measures:
 
 ### Linux Permissions
 
-ICMP ping requires raw socket privileges. Choose one option:
+ICMP ping requires special privileges. Since kernel 2.6.39, unprivileged users can create ICMP Echo sockets if their group ID falls within the `net.ipv4.ping_group_range` sysctl parameter (default: `1 0`, disabled).
 
-**Option 1: Add user to ping group (recommended)**
-```bash
-# Add monitoring user to ping group
-sudo usermod -aG ping monitoring-agent
+**Option 1: Configure ping_group_range for a specific group (Recommended)**
 
-# Verify group membership
-groups monitoring-agent
-```
+1. Create a dedicated group:
+   ```bash
+   sudo groupadd --system linksense
+   ```
+
+2. Find the group ID:
+   ```bash
+   getent group linksense
+   # Output: linksense:x:999:  (GID is 999)
+   ```
+
+3. Edit `/etc/sysctl.conf` and add (replace `999` with your GID):
+   ```
+   net.ipv4.ping_group_range = 999 999
+   ```
+
+4. Apply and add user to group:
+   ```bash
+   sudo sysctl -p
+   sudo usermod -a -G linksense monitoring-agent
+   ```
+
+5. Log out/in for group membership to take effect.
 
 **Option 2: Grant CAP_NET_RAW capability**
-```bash
-# Grant capability to agent binary
-sudo setcap cap_net_raw+ep /path/to/agent
 
-# Verify capability
+Must be re-applied after each recompilation.
+
+```bash
+sudo setcap cap_net_raw+ep /path/to/agent
 getcap /path/to/agent
 ```
 

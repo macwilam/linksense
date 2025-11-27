@@ -80,15 +80,23 @@ rate_limit_max_requests = 100
 |--------|----------|---------|-------------|
 | `listen_address` | Yes | - | IP:port to bind server (e.g., "0.0.0.0:8787") |
 | `api_key` | Yes | - | Authentication key for agents (must match agent configs) |
-| `data_retention_days` | Yes | - | Days to retain metrics before cleanup |
-| `agent_configs_dir` | Yes | - | Directory containing agent-specific task configurations |
-| `bandwidth_test_size_mb` | Yes | - | Size of bandwidth test file in megabytes |
+| `data_retention_days` | Yes | - | Days to retain metrics before cleanup (max: 3650) |
+| `agent_configs_dir` | No | `./agent-configs` | Directory containing agent-specific task configurations |
+| `bandwidth_test_size_mb` | No | `10` | Size of bandwidth test file in megabytes (max: 1000) |
 | `reconfigure_check_interval_seconds` | No | `10` | Interval to check for bulk reconfiguration requests (min: 1, max: 300) |
 | `agent_id_whitelist` | No | `[]` | Allowed agent IDs (empty = all allowed) |
 | `cleanup_interval_hours` | No | `24` | Hours between database cleanup runs |
 | `rate_limit_enabled` | No | `true` | Enable rate limiting per agent |
-| `rate_limit_window_seconds` | No | `60` | Rate limit time window |
-| `rate_limit_max_requests` | No | `100` | Max requests per agent per window |
+| `rate_limit_window_seconds` | No | `60` | Rate limit time window (max: 3600) |
+| `rate_limit_max_requests` | No | `100` | Max requests per agent per window (max: 10000) |
+| `bandwidth_test_timeout_seconds` | No | `120` | Bandwidth test timeout |
+| `bandwidth_queue_base_delay_seconds` | No | `30` | Base delay for bandwidth queue when no test running |
+| `bandwidth_queue_current_test_delay_seconds` | No | `60` | Delay for current bandwidth test |
+| `bandwidth_queue_position_multiplier_seconds` | No | `30` | Delay multiplier per queue position |
+| `bandwidth_max_delay_seconds` | No | `300` | Maximum delay suggestion for bandwidth queue |
+| `initial_cleanup_delay_seconds` | No | `3600` | Initial delay before first cleanup (1 hour) |
+| `graceful_shutdown_timeout_seconds` | No | `30` | Graceful shutdown timeout |
+| `wal_checkpoint_interval_seconds` | No | `60` | WAL checkpoint interval |
 | `monitor_agents_health` | No | `false` | Enable periodic agent health monitoring |
 | `health_check_interval_seconds` | No | `300` | Health check interval (5 minutes) |
 | `health_check_success_ratio_threshold` | No | `0.9` | Threshold for marking agents problematic (0.9 = 90%) |
@@ -608,11 +616,13 @@ Server uses SQLite for metrics storage:
 
 **Aggregated Metrics Tables**:
 - `agg_metric_ping` - Ping statistics from all agents
-- `agg_metric_http_get` - HTTP timing from all agents
+- `agg_metric_tcp` - TCP connection statistics from all agents
+- `agg_metric_tls` - TLS handshake statistics from all agents
+- `agg_metric_http` - HTTP timing from all agents
 - `agg_metric_http_content` - Content checks from all agents
-- `agg_metric_dns_query` - DNS queries from all agents
+- `agg_metric_dns` - DNS queries from all agents
 - `agg_metric_bandwidth` - Bandwidth tests from all agents
-- `agg_metric_sql_query` - SQL query results from all agents
+- `agg_metric_sql_query` - SQL query results from all agents (requires sql-tasks feature)
 
 **Agent Tracking**:
 - `agents` table - Agent registration and last-seen timestamps

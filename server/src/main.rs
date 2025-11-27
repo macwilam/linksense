@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 // The server is organized into modules for API, configuration, and database management.
 mod api;
@@ -92,6 +92,8 @@ pub struct Server {
     wal_checkpoint_task_handle: Option<JoinHandle<()>>,
     /// Handle to the health monitoring task for graceful shutdown.
     health_monitor_task_handle: Option<JoinHandle<()>>,
+    /// Handle to the rate limiter cleanup task for graceful shutdown.
+    rate_limiter_cleanup_task_handle: Option<JoinHandle<()>>,
     /// Shutdown signal sender for notifying background tasks.
     shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 }
@@ -139,6 +141,7 @@ impl Server {
             cleanup_task_handle: None,
             wal_checkpoint_task_handle: None,
             health_monitor_task_handle: None,
+            rate_limiter_cleanup_task_handle: None,
             shutdown_tx: None,
         })
     }
@@ -269,6 +272,29 @@ impl Server {
             Arc::clone(&self.config_manager),
             bandwidth_manager,
         );
+
+        // Start rate limiter cleanup task to prevent unbounded memory growth
+        // Cleanup runs every rate_limit_window_seconds to remove stale agent entries
+        let rate_limiter_for_cleanup = app_state.rate_limiter.clone();
+        let rate_limit_window = server_config.rate_limit_window_seconds;
+        let mut rate_limiter_shutdown_rx = shutdown_tx.subscribe();
+        let rate_limiter_cleanup_task = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(rate_limit_window as u64));
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        rate_limiter_for_cleanup.cleanup_stale_entries().await;
+                    }
+                    _ = rate_limiter_shutdown_rx.recv() => {
+                        debug!("Rate limiter cleanup task received shutdown signal");
+                        break;
+                    }
+                }
+            }
+        });
+        self.rate_limiter_cleanup_task_handle = Some(rate_limiter_cleanup_task);
 
         // Set up the full REST API using the `api` module
         let app = crate::api::create_router(app_state);

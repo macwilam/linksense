@@ -7,11 +7,46 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use reqwest::Client;
 use shared::{config::HttpContentParams, metrics::RawHttpContentMetric};
+use std::collections::HashMap;
+use std::sync::RwLock;
 use std::time::Instant;
 use tracing::{debug, warn};
 
 // Maximum response body size to prevent memory exhaustion
 const MAX_RESPONSE_SIZE: usize = 100 * 1024 * 1024; // 100MB
+
+/// Global cache for compiled regex patterns to avoid recompilation on every request.
+/// Patterns are validated at config load time, so compilation should always succeed.
+/// Using RwLock for thread-safe concurrent reads with exclusive writes.
+static REGEX_CACHE: std::sync::LazyLock<RwLock<HashMap<String, Regex>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Get or compile a regex pattern from the cache
+fn get_or_compile_regex(pattern: &str) -> Result<Regex> {
+    // First, try to get from cache with a read lock (fast path)
+    {
+        let cache = REGEX_CACHE.read().unwrap();
+        if let Some(regex) = cache.get(pattern) {
+            return Ok(regex.clone());
+        }
+    }
+
+    // Not in cache, compile and insert with write lock
+    let regex =
+        Regex::new(pattern).with_context(|| format!("Failed to compile regexp: {}", pattern))?;
+
+    {
+        let mut cache = REGEX_CACHE.write().unwrap();
+        // Check again in case another thread inserted while we were waiting
+        if let Some(existing) = cache.get(pattern) {
+            return Ok(existing.clone());
+        }
+        cache.insert(pattern.to_string(), regex.clone());
+        debug!("Cached compiled regex pattern: {}", pattern);
+    }
+
+    Ok(regex)
+}
 
 /// Execute an HTTP content check task and return the raw metric
 ///
@@ -30,9 +65,8 @@ pub async fn execute_http_content_check(
     let start_time = Instant::now();
     let timeout = std::time::Duration::from_secs(params.timeout_seconds as u64);
 
-    // Compile regex pattern
-    let regex = Regex::new(&params.regexp)
-        .with_context(|| format!("Failed to compile regexp: {}", params.regexp))?;
+    // Get compiled regex from cache (avoids recompilation on every request)
+    let regex = get_or_compile_regex(&params.regexp)?;
 
     // Execute HTTP request with per-request timeout
     // Note: Timeout is applied per-request, not on the client, to allow different

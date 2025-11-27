@@ -10,8 +10,8 @@ Bandwidth testing measures network throughput between agent and central server u
 - `BandwidthTestManager` ensures only one agent performs bandwidth test at a time
 - FIFO queue with automatic advancement when tests complete
 - Server responds with "proceed" (with data size) or "delay" (with suggested retry time)
-- Automatic cleanup of expired test states (120s timeout) and old queue entries (300s max)
-- Intelligent delay calculation: 60s base + 30s per queued agent (capped at 300s)
+- Automatic cleanup of expired test states and old queue entries
+- Configurable delay calculation via server.toml parameters
 
 ### Configuration
 - **Server**: `bandwidth_test_size_mb` in `server.toml` (default: 10MB) - **server-controlled only**
@@ -48,9 +48,16 @@ The `BandwidthTestManager` maintains sophisticated queue state:
 - **Current Test Tracking**: Stores agent ID and start time
 - **Waiting Queue**: FIFO queue of waiting agents with timestamps
 - **Auto-Advancement**: When test completes or times out, first queued agent auto-starts
-- **Test Timeout**: 120 seconds - tests exceeding this are cleaned up automatically
-- **Queue Expiry**: Queue entries older than 300s (max_delay) are removed
-- **Delay Calculation**: Base 60s + (queue_length × 30s), capped at 300s
+- **Test Timeout**: Configurable via `bandwidth_test_timeout_seconds` (default: 120s)
+- **Queue Expiry**: Queue entries older than `bandwidth_max_delay_seconds` are removed
+- **Delay Calculation**: `bandwidth_queue_current_test_delay_seconds` + (queue_length × `bandwidth_queue_position_multiplier_seconds`), capped at `bandwidth_max_delay_seconds`
+
+**Server Configuration Parameters** (in `server.toml`):
+- `bandwidth_test_timeout_seconds` - Test timeout duration (default: 120)
+- `bandwidth_queue_base_delay_seconds` - Base delay when no test running (default: 30)
+- `bandwidth_queue_current_test_delay_seconds` - Delay when test is running (default: 60)
+- `bandwidth_queue_position_multiplier_seconds` - Additional delay per queue position (default: 30)
+- `bandwidth_max_delay_seconds` - Maximum delay cap (default: 300)
 
 **Important**: Server never returns "queue full" errors. It always accepts requests and returns either:
 - `action: "proceed"` + `data_size_bytes` - Agent can start immediately

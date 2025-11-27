@@ -49,7 +49,7 @@ Server checks for reconfiguration requests at regular intervals (configurable vi
 
 - Valid TOML syntax
 - Supported task types:
-  - `ping`, `http_get`, `http_content`, `dns_query`, `dns_query_doh`, `bandwidth`
+  - `ping`, `tcp`, `tls_handshake`, `http_get`, `http_content`, `dns_query`, `dns_query_doh`, `bandwidth`
   - `sql_query` (requires `--features sql-tasks` at build time)
 - Minimum schedule requirements:
   - Bandwidth tasks: `schedule_seconds >= 60`

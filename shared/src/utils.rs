@@ -150,6 +150,67 @@ pub fn truncate_string(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Validate URL format and structure
+///
+/// Performs proper URL parsing to ensure:
+/// - URL is syntactically valid
+/// - Uses http or https scheme (or just https if `https_only` is true)
+/// - Has a valid host
+/// - Does not contain embedded credentials (security risk)
+///
+/// # Arguments
+/// * `url_str` - The URL string to validate
+/// * `https_only` - If true, only https:// URLs are allowed
+///
+/// # Returns
+/// * `Ok(())` if the URL is valid
+/// * `Err` with a descriptive error message if validation fails
+pub fn validate_url(url_str: &str, https_only: bool) -> crate::Result<()> {
+    use url::Url;
+
+    let parsed = Url::parse(url_str).map_err(|e| {
+        crate::MonitoringError::Validation(format!("Invalid URL '{}': {}", url_str, e))
+    })?;
+
+    // Check scheme
+    let scheme = parsed.scheme();
+    if https_only {
+        if scheme != "https" {
+            return Err(crate::MonitoringError::Validation(format!(
+                "URL '{}' must use https:// scheme",
+                url_str
+            ))
+            .into());
+        }
+    } else if scheme != "http" && scheme != "https" {
+        return Err(crate::MonitoringError::Validation(format!(
+            "URL '{}' must use http:// or https:// scheme",
+            url_str
+        ))
+        .into());
+    }
+
+    // Check for valid host
+    if parsed.host().is_none() {
+        return Err(crate::MonitoringError::Validation(format!(
+            "URL '{}' must have a valid host",
+            url_str
+        ))
+        .into());
+    }
+
+    // Security: reject URLs with embedded credentials
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(crate::MonitoringError::Validation(format!(
+            "URL '{}' must not contain embedded credentials (use separate authentication)",
+            url_str
+        ))
+        .into());
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +240,28 @@ mod tests {
 
         // Different input should produce different checksums
         assert_ne!(checksum1, checksum2);
+    }
+
+    #[test]
+    fn test_validate_url() {
+        // Valid URLs
+        assert!(validate_url("https://example.com", false).is_ok());
+        assert!(validate_url("http://example.com", false).is_ok());
+        assert!(validate_url("https://example.com/path/to/resource", false).is_ok());
+        assert!(validate_url("https://example.com:8080/api", false).is_ok());
+        assert!(validate_url("https://sub.domain.example.com", false).is_ok());
+
+        // HTTPS only mode
+        assert!(validate_url("https://example.com", true).is_ok());
+        assert!(validate_url("http://example.com", true).is_err()); // HTTP not allowed in https_only mode
+
+        // Invalid URLs
+        assert!(validate_url("", false).is_err()); // Empty
+        assert!(validate_url("not-a-url", false).is_err()); // No scheme
+        assert!(validate_url("ftp://example.com", false).is_err()); // Wrong scheme
+        assert!(validate_url("http://", false).is_err()); // No host
+        assert!(validate_url("https://user:pass@example.com", false).is_err()); // Embedded credentials
+        assert!(validate_url("https://user@example.com", false).is_err()); // Embedded username
     }
 
     #[test]

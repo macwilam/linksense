@@ -587,14 +587,8 @@ impl AgentConfig {
                 .into());
             }
 
-            if !self.central_server_url.starts_with("http://")
-                && !self.central_server_url.starts_with("https://")
-            {
-                return Err(crate::MonitoringError::Validation(
-                    "central_server_url must start with http:// or https://".to_string(),
-                )
-                .into());
-            }
+            // Validate URL format properly (not just prefix check)
+            crate::utils::validate_url(&self.central_server_url, false)?;
 
             if self.api_key.is_empty() {
                 return Err(crate::MonitoringError::Validation(
@@ -735,12 +729,8 @@ impl TaskConfig {
                     )
                     .into());
                 }
-                if !params.url.starts_with("http://") && !params.url.starts_with("https://") {
-                    return Err(crate::MonitoringError::Validation(
-                        format!("HTTP GET task has invalid URL '{}'. URL must start with http:// or https://", params.url)
-                    )
-                    .into());
-                }
+                // Validate URL format properly (not just prefix check)
+                crate::utils::validate_url(&params.url, false)?;
             }
             (TaskType::HttpContent, TaskParams::HttpContent(params)) => {
                 if params.url.is_empty() {
@@ -749,12 +739,8 @@ impl TaskConfig {
                     )
                     .into());
                 }
-                if !params.url.starts_with("http://") && !params.url.starts_with("https://") {
-                    return Err(crate::MonitoringError::Validation(
-                        format!("HTTP Content task has invalid URL '{}'. URL must start with http:// or https://", params.url)
-                    )
-                    .into());
-                }
+                // Validate URL format properly (not just prefix check)
+                crate::utils::validate_url(&params.url, false)?;
                 if params.regexp.is_empty() {
                     return Err(crate::MonitoringError::Validation(
                         "HTTP Content task is missing required parameter 'regexp'. Please specify a regular expression pattern to match in the response.".to_string(),
@@ -792,12 +778,8 @@ impl TaskConfig {
                     )
                     .into());
                 }
-                if !params.server_url.starts_with("https://") {
-                    return Err(crate::MonitoringError::Validation(
-                        format!("DNS-over-HTTPS task has invalid server_url '{}'. URL must start with https:// (DoH requires HTTPS)", params.server_url)
-                    )
-                    .into());
-                }
+                // Validate URL format properly - DoH requires HTTPS
+                crate::utils::validate_url(&params.server_url, true)?;
                 if params.domain.is_empty() {
                     return Err(crate::MonitoringError::Validation(
                         "DNS-over-HTTPS task is missing required parameter 'domain'. Please specify the domain name to resolve.".to_string(),
@@ -977,6 +959,57 @@ impl ServerConfig {
         if self.reconfigure_check_interval_seconds > 300 {
             return Err(crate::MonitoringError::Validation(
                 "reconfigure_check_interval_seconds must not exceed 300 (5 minutes)".to_string(),
+            )
+            .into());
+        }
+
+        // Validate bandwidth test size (prevent excessive memory/network usage)
+        if self.bandwidth_test_size_mb == 0 {
+            return Err(crate::MonitoringError::Validation(
+                "bandwidth_test_size_mb must be greater than 0".to_string(),
+            )
+            .into());
+        }
+        if self.bandwidth_test_size_mb > 1000 {
+            return Err(crate::MonitoringError::Validation(
+                "bandwidth_test_size_mb must not exceed 1000 MB (1 GB)".to_string(),
+            )
+            .into());
+        }
+
+        // Validate rate limiting settings
+        if self.rate_limit_enabled {
+            if self.rate_limit_window_seconds == 0 {
+                return Err(crate::MonitoringError::Validation(
+                    "rate_limit_window_seconds must be greater than 0 when rate limiting is enabled".to_string(),
+                )
+                .into());
+            }
+            if self.rate_limit_window_seconds > 3600 {
+                return Err(crate::MonitoringError::Validation(
+                    "rate_limit_window_seconds must not exceed 3600 (1 hour)".to_string(),
+                )
+                .into());
+            }
+            if self.rate_limit_max_requests == 0 {
+                return Err(crate::MonitoringError::Validation(
+                    "rate_limit_max_requests must be greater than 0 when rate limiting is enabled"
+                        .to_string(),
+                )
+                .into());
+            }
+            if self.rate_limit_max_requests > 10000 {
+                return Err(crate::MonitoringError::Validation(
+                    "rate_limit_max_requests must not exceed 10000".to_string(),
+                )
+                .into());
+            }
+        }
+
+        // Validate data retention (reasonable bounds)
+        if self.data_retention_days > 3650 {
+            return Err(crate::MonitoringError::Validation(
+                "data_retention_days must not exceed 3650 (10 years)".to_string(),
             )
             .into());
         }

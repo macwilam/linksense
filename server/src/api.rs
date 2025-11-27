@@ -95,6 +95,35 @@ impl AgentRateLimiter {
         requests.push(now);
         Ok(())
     }
+
+    /// Remove stale entries from agents that haven't sent requests recently.
+    /// This prevents unbounded memory growth from agents that connect once and never return.
+    pub async fn cleanup_stale_entries(&self) {
+        let mut limits = self.limits.write().await;
+        let now = Instant::now();
+
+        // Remove entries where all timestamps are older than the window
+        // (meaning the agent hasn't sent requests within the rate limit window)
+        let before_count = limits.len();
+        limits.retain(|_, timestamps| {
+            timestamps.retain(|&time| now.duration_since(time) < self.window);
+            !timestamps.is_empty()
+        });
+        let removed = before_count.saturating_sub(limits.len());
+
+        if removed > 0 {
+            debug!(
+                removed_agents = removed,
+                remaining_agents = limits.len(),
+                "Cleaned up stale rate limiter entries"
+            );
+        }
+    }
+
+    /// Returns the number of agents currently tracked
+    pub async fn tracked_agent_count(&self) -> usize {
+        self.limits.read().await.len()
+    }
 }
 
 impl Clone for AgentRateLimiter {
@@ -838,8 +867,11 @@ async fn handle_config_upload(
     let agent_configs_dir = std::path::PathBuf::from(&state.config.agent_configs_dir);
     let agent_config_path = agent_configs_dir.join(format!("{}.toml", request.agent_id));
 
-    // Check if config already exists
-    if agent_config_path.exists() {
+    // Check if config already exists (use async metadata check to avoid blocking)
+    if tokio::fs::try_exists(&agent_config_path)
+        .await
+        .unwrap_or(false)
+    {
         info!(
             agent_id = %request.agent_id,
             path = %agent_config_path.display(),
@@ -852,8 +884,8 @@ async fn handle_config_upload(
         }));
     }
 
-    // Write the configuration file
-    if let Err(e) = std::fs::write(&agent_config_path, &tasks_toml_content) {
+    // Write the configuration file using async I/O to avoid blocking the runtime
+    if let Err(e) = tokio::fs::write(&agent_config_path, &tasks_toml_content).await {
         error!(
             agent_id = %request.agent_id,
             path = %agent_config_path.display(),
