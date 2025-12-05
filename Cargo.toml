@@ -9,12 +9,12 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 toml = "0.9.7"
 blake3 = "1.8.2"
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.30.0", features = ["bundled"] }
 regex = "1.11.3"
 tikv-jemallocator = "0.6"
 
 # SQL task dependencies
-rsql_drivers = "0.19.2"
+rsql_drivers = { version = "0.19.2", default-features = false, features = ["driver-postgresql", "driver-mysql", "driver-mariadb"] }
 rsql_driver = "0.19.2"
 
 anyhow = "1.0.100"
@@ -38,6 +38,7 @@ hickory-resolver = "0.25.2"
 socket2 = "0.6.0"
 url = "2.5.7"
 hickory-client = "0.25.2"
+snmp2 = { version = "0.4", features = ["tokio", "v3"] }
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 tokio-rustls = "0.26"
 rustls-native-certs = "0.8"
@@ -51,7 +52,7 @@ rand = "0.9.2"
 futures-util = "0.3.30"
 
 [workspace.package]
-version = "0.8.2"
+version = "0.8.3"
 edition = "2021"
 license = "MIT License"
 authors = ["Maciej Wilamowski - Sycope"]

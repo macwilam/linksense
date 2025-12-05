@@ -37,6 +37,16 @@ pub fn default_sql_timeout() -> u32 {
     30
 }
 
+/// Default SNMP query timeout (5 seconds)
+pub fn default_snmp_timeout() -> u32 {
+    5
+}
+
+/// Default SNMP community string
+pub fn default_snmp_community() -> String {
+    "public".to_string()
+}
+
 /// Default maximum JSON result size for SQL queries (64 KB)
 #[cfg(feature = "sql-tasks")]
 pub fn default_sql_json_max_size() -> usize {

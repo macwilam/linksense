@@ -43,6 +43,7 @@ hickory-resolver.workspace = true
 socket2.workspace = true
 url.workspace = true
 hickory-client.workspace = true
+snmp2.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-native-certs.workspace = true

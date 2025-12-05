@@ -155,6 +155,7 @@ impl TaskExecutor {
                     TaskType::Bandwidth => self.execute_bandwidth_task(task_config).await,
                     #[cfg(feature = "sql-tasks")]
                     TaskType::SqlQuery => self.execute_sql_query_task(task_config).await,
+                    TaskType::Snmp => self.execute_snmp_task(task_config).await,
                 }
             } => task_result,
             _ = tokio::time::sleep(timeout_duration) => {
@@ -638,6 +639,40 @@ impl TaskExecutor {
             Ok(metric_data)
         } else {
             Err(anyhow::anyhow!("Invalid parameters for SQL query task"))
+        }
+    }
+
+    /// Executes an SNMP query task
+    async fn execute_snmp_task(&self, task_config: &TaskConfig) -> Result<MetricData> {
+        debug!("Executing SNMP task: {}", task_config.name);
+
+        if let TaskParams::Snmp(params) = &task_config.params {
+            let metric_result = crate::task_snmp::execute_snmp_task(params).await;
+
+            let metric_data = match metric_result {
+                Ok(metric) => MetricData::new(
+                    task_config.name.clone(),
+                    TaskType::Snmp,
+                    RawMetricData::Snmp(metric),
+                ),
+                Err(e) => MetricData::new(
+                    task_config.name.clone(),
+                    TaskType::Snmp,
+                    RawMetricData::Snmp(shared::metrics::RawSnmpMetric {
+                        response_time_ms: None,
+                        success: false,
+                        value: None,
+                        value_type: None,
+                        oid_queried: params.oid.clone(),
+                        error: Some(e.to_string()),
+                        target_id: params.target_id.clone(),
+                    }),
+                ),
+            };
+
+            Ok(metric_data)
+        } else {
+            Err(anyhow::anyhow!("Invalid parameters for SNMP task"))
         }
     }
 }

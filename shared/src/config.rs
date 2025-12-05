@@ -249,6 +249,12 @@ impl<'de> Deserialize<'de> for TaskConfig {
                         })?;
                         TaskParams::SqlQuery(params)
                     }
+                    TaskType::Snmp => {
+                        let params: SnmpParams = params_value.try_into().map_err(|e| {
+                            Error::custom(format!("Failed to parse Snmp task parameters: {}", e))
+                        })?;
+                        TaskParams::Snmp(params)
+                    }
                 };
 
                 Ok(TaskConfig {
@@ -288,6 +294,8 @@ pub enum TaskType {
     /// SQL query test (requires sql-tasks feature)
     #[cfg(feature = "sql-tasks")]
     SqlQuery,
+    /// SNMP query test
+    Snmp,
 }
 
 /// Task-specific parameters
@@ -315,6 +323,7 @@ pub enum TaskParams {
     Bandwidth(BandwidthParams),
     #[cfg(feature = "sql-tasks")]
     SqlQuery(SqlQueryParams),
+    Snmp(SnmpParams),
 }
 
 /// Parameters for TLS handshake tasks
@@ -510,6 +519,75 @@ pub enum DnsRecordType {
     CNAME,
     TXT,
     NS,
+}
+
+/// SNMP protocol version
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SnmpVersion {
+    V1,
+    #[default]
+    V2c,
+    V3,
+}
+
+/// SNMPv3 authentication protocol
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SnmpAuthProtocol {
+    #[default]
+    None,
+    Md5,
+    Sha1,
+    Sha224,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+/// SNMPv3 security level
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SnmpSecurityLevel {
+    /// No authentication, no privacy (v1/v2c style with username)
+    #[default]
+    NoAuthNoPriv,
+    /// Authentication, no privacy
+    AuthNoPriv,
+}
+
+/// Parameters for SNMP query tasks
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SnmpParams {
+    /// Target host (IP or hostname), optionally with port (default: 161)
+    /// Examples: "192.168.1.1", "switch.local", "192.168.1.1:1161"
+    pub host: String,
+    /// OID to query in dotted notation (e.g., "1.3.6.1.2.1.1.1.0")
+    pub oid: String,
+    /// SNMP protocol version (default: v2c)
+    #[serde(default)]
+    pub version: SnmpVersion,
+    /// Community string for SNMPv1/v2c (default: "public")
+    #[serde(default = "default_snmp_community")]
+    pub community: String,
+    /// Username for SNMPv3
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// SNMPv3 security level (default: noAuthNoPriv)
+    #[serde(default)]
+    pub security_level: SnmpSecurityLevel,
+    /// SNMPv3 authentication protocol (default: none)
+    #[serde(default)]
+    pub auth_protocol: SnmpAuthProtocol,
+    /// SNMPv3 authentication password
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_password: Option<String>,
+    /// Optional timeout in seconds (default: 5)
+    #[serde(default = "default_snmp_timeout")]
+    pub timeout_seconds: u32,
+    /// Optional target identifier for grouping/filtering
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
 }
 
 /// Server configuration loaded from server.toml
@@ -728,6 +806,14 @@ impl TaskConfig {
             .into());
         }
 
+        // SNMP tasks have a minimum schedule of 60 seconds
+        if self.task_type == TaskType::Snmp && self.schedule_seconds < 60 {
+            return Err(crate::MonitoringError::Validation(
+                format!("Invalid schedule_seconds for SNMP task: {}. SNMP tasks must have schedule_seconds >= 60.", self.schedule_seconds)
+            )
+            .into());
+        }
+
         // Validate task-specific parameters
         match (&self.task_type, &self.params) {
             (TaskType::Ping, TaskParams::Ping(params)) => {
@@ -857,6 +943,55 @@ impl TaskConfig {
                     .into());
                 }
             }
+            (TaskType::Snmp, TaskParams::Snmp(params)) => {
+                if params.host.is_empty() {
+                    return Err(crate::MonitoringError::Validation(
+                        "SNMP task is missing required parameter 'host'. Please specify a hostname or IP address.".to_string(),
+                    )
+                    .into());
+                }
+                if params.oid.is_empty() {
+                    return Err(crate::MonitoringError::Validation(
+                        "SNMP task is missing required parameter 'oid'. Please specify the OID to query (e.g., '1.3.6.1.2.1.1.1.0').".to_string(),
+                    )
+                    .into());
+                }
+                // Validate OID format (basic check for dotted notation)
+                if !params.oid.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                    return Err(crate::MonitoringError::Validation(
+                        format!("Invalid OID format: '{}'. OID must be in dotted notation (e.g., '1.3.6.1.2.1.1.1.0').", params.oid)
+                    )
+                    .into());
+                }
+                // Validate SNMPv3 requirements
+                if params.version == SnmpVersion::V3 {
+                    if params.username.is_none()
+                        || params.username.as_ref().is_some_and(|s| s.is_empty())
+                    {
+                        return Err(crate::MonitoringError::Validation(
+                            "SNMPv3 requires 'username' parameter.".to_string(),
+                        )
+                        .into());
+                    }
+                    if params.security_level == SnmpSecurityLevel::AuthNoPriv {
+                        if params.auth_protocol == SnmpAuthProtocol::None {
+                            return Err(crate::MonitoringError::Validation(
+                                "SNMPv3 with authNoPriv security level requires 'auth_protocol' to be set.".to_string(),
+                            )
+                            .into());
+                        }
+                        if params.auth_password.is_none()
+                            || params.auth_password.as_ref().is_some_and(|s| s.is_empty())
+                        {
+                            return Err(crate::MonitoringError::Validation(
+                                "SNMPv3 with authNoPriv security level requires 'auth_password'."
+                                    .to_string(),
+                            )
+                            .into());
+                        }
+                    }
+                }
+            }
             _ => {
                 return Err(crate::MonitoringError::Validation(
                     format!("Task type mismatch: The task is defined as type '{:?}' but the parameters provided do not match this type. Please ensure the task type and parameters are consistent.", self.task_type)
@@ -890,6 +1025,7 @@ impl TaskConfig {
             TaskParams::Bandwidth(params) => params.timeout_seconds,
             #[cfg(feature = "sql-tasks")]
             TaskParams::SqlQuery(params) => params.timeout_seconds,
+            TaskParams::Snmp(params) => params.timeout_seconds,
         }
     }
 }

@@ -22,6 +22,7 @@ mod db_http;
 mod db_http_content;
 mod db_ping;
 mod db_queue;
+mod db_snmp;
 #[cfg(feature = "sql-tasks")]
 mod db_sql;
 mod db_tcp;
@@ -97,6 +98,7 @@ impl AgentDatabase {
         db_bandwidth::create_tables(conn)?;
         #[cfg(feature = "sql-tasks")]
         db_sql::create_tables(conn)?;
+        db_snmp::create_tables(conn)?;
 
         // Create queue table
         db_queue::create_queue_table(conn)?;
@@ -161,6 +163,7 @@ impl AgentDatabase {
             }
             #[cfg(feature = "sql-tasks")]
             RawMetricData::SqlQuery(sql_data) => db_sql::store_raw_metric(conn, metric, sql_data),
+            RawMetricData::Snmp(snmp_data) => db_snmp::store_raw_metric(conn, metric, snmp_data),
         }
     }
 
@@ -208,6 +211,9 @@ impl AgentDatabase {
             TaskType::SqlQuery => {
                 db_sql::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
+            TaskType::Snmp => {
+                db_snmp::generate_aggregated_metrics(conn, task_name, period_start, period_end)
+            }
         }
     }
 
@@ -240,6 +246,8 @@ impl AgentDatabase {
         #[cfg(not(feature = "sql-tasks"))]
         let (raw_sql, agg_sql) = (0, 0);
 
+        let (raw_snmp, agg_snmp) = db_snmp::cleanup_old_data(conn, cutoff_time)?;
+
         let total_raw_deleted = raw_ping
             + raw_tcp
             + raw_http
@@ -247,7 +255,8 @@ impl AgentDatabase {
             + raw_dns
             + raw_bandwidth
             + raw_http_content
-            + raw_sql;
+            + raw_sql
+            + raw_snmp;
         let total_agg_deleted = agg_ping
             + agg_tcp
             + agg_http
@@ -255,7 +264,8 @@ impl AgentDatabase {
             + agg_dns
             + agg_bandwidth
             + agg_http_content
-            + agg_sql;
+            + agg_sql
+            + agg_snmp;
 
         info!(
             "Cleanup complete: {} raw metrics, {} aggregated metrics deleted",
@@ -370,6 +380,9 @@ impl AgentDatabase {
             #[cfg(feature = "sql-tasks")]
             AggregatedMetricData::SqlQuery(sql_data) => {
                 db_sql::store_aggregated_metric(conn, metrics, sql_data)?
+            }
+            AggregatedMetricData::Snmp(snmp_data) => {
+                db_snmp::store_aggregated_metric(conn, metrics, snmp_data)?
             }
         };
 

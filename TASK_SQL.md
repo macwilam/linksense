@@ -26,22 +26,58 @@ This task uses **`rsql_drivers`**, a Rust SQL driver abstraction layer.
 - ⚠️ **Feature Compilation**: Must compile with `sql-tasks` feature
 - ⚠️ **No Query Validation**: SQL syntax errors only detected at runtime
 
+**Default Database Drivers**:
+
+By default, only the following database drivers are compiled:
+```toml
+# In workspace Cargo.toml
+rsql_drivers = { version = "0.19.2", default-features = false, features = ["driver-postgresql", "driver-mysql", "driver-mariadb"] }
+```
+
+To add support for additional databases (e.g., SQLite), modify the `rsql_drivers` line in the workspace `Cargo.toml`:
+```toml
+# Example: Adding SQLite support
+rsql_drivers = { version = "0.19.2", default-features = false, features = [
+    "driver-postgresql",
+    "driver-mysql", 
+    "driver-mariadb",
+    "driver-sqlite"
+] }
+```
+
+**Available driver features**: `driver-postgresql`, `driver-mysql`, `driver-mariadb`, `driver-sqlite`, `driver-duckdb`, `driver-snowflake`, and others. See [rsql_drivers documentation](https://docs.rs/rsql_drivers) for the full list.
+
+**Note**: Adding `driver-sqlite` may cause compilation conflicts with the project's `rusqlite` dependency due to different `libsqlite3-sys` versions. If you encounter this, ensure compatible versions are used.
+
 ### Supported Databases
 
-**PostgreSQL** (`database_type = "postgres"`):
+**PostgreSQL** (`database_type = "postgresql"`):
 - **Protocol**: PostgreSQL wire protocol (native)
 - **Versions**: PostgreSQL 9.5+
 - **SSL/TLS**: Supported
+- **Note**: Use `"postgresql"` (not `"postgres"`) as the database_type
 
 **MySQL** (`database_type = "mysql"`):
 - **Protocol**: MySQL wire protocol (native)
-- **Versions**: MySQL 5.6+, MariaDB 10.2+
+- **Versions**: MySQL 5.6+
 - **SSL/TLS**: Supported
+
+**MariaDB** (`database_type = "mariadb"` or `"mysql"`):
+- **Protocol**: MySQL-compatible wire protocol
+- **Versions**: MariaDB 10.2+
+- **SSL/TLS**: Supported
+- **Note**: Can use either `"mariadb"` or `"mysql"` as database_type
 
 **SQLite** (`database_type = "sqlite"`):
 - **File Access**: Direct file-based database access
 - **Versions**: SQLite 3.x
 - **Note**: Local file only, no client-server
+- ⚠️ **Not enabled by default**: Requires adding `driver-sqlite` feature (see "Default Database Drivers" above)
+
+**Databases NOT Enabled by Default**:
+- **SQLite**: Add `driver-sqlite` feature to enable
+- **DuckDB**: Add `driver-duckdb` feature to enable
+- **Snowflake**: Add `driver-snowflake` feature to enable
 
 **Databases NOT Supported**:
 - ❌ **Oracle**: Not supported
@@ -132,7 +168,7 @@ name = "Database Health Check"
 schedule_seconds = 60
 query = "SELECT 1"
 database_url = "localhost:5432/mydb"
-database_type = "postgres"
+database_type = "postgresql"
 username = "monitor"
 password = "secret"
 timeout_seconds = 30
@@ -148,7 +184,7 @@ name = "Recent Errors Log"
 schedule_seconds = 300
 query = "SELECT id, message, created_at FROM errors ORDER BY created_at DESC LIMIT 50"
 database_url = "localhost:5432/mydb"
-database_type = "postgres"
+database_type = "postgresql"
 username = "monitor"
 password = "secret"
 mode = "json"
@@ -166,7 +202,7 @@ timeout_seconds = 60
 | `schedule_seconds` | integer | ✅ | - | Interval between queries (≥60 seconds, enforced) |
 | `query` | string | ✅ | - | SQL query to execute |
 | `database_url` | string | ✅ | - | Database host/path (without protocol prefix) |
-| `database_type` | string | ✅ | - | Database type: `postgres`, `mysql`, `sqlite` |
+| `database_type` | string | ✅ | - | Database type: `postgresql`, `mysql`, `mariadb`, `sqlite` |
 | `username` | string | ❌ | - | Database username |
 | `password` | string | ❌ | - | Database password |
 | `timeout_seconds` | integer | ❌ | 30 | Query timeout (seconds) |
@@ -181,7 +217,7 @@ timeout_seconds = 60
 #### PostgreSQL
 ```toml
 database_url = "localhost:5432/database_name"
-database_type = "postgres"
+database_type = "postgresql"
 username = "user"
 password = "password"
 ```
@@ -190,6 +226,14 @@ password = "password"
 ```toml
 database_url = "localhost:3306/database_name"
 database_type = "mysql"
+username = "user"
+password = "password"
+```
+
+#### MariaDB
+```toml
+database_url = "localhost:3306/database_name"
+database_type = "mariadb"
 username = "user"
 password = "password"
 ```
@@ -210,7 +254,7 @@ name = "Postgres Health"
 schedule_seconds = 60
 query = "SELECT 1"
 database_url = "localhost:5432/postgres"
-database_type = "postgres"
+database_type = "postgresql"
 username = "monitor"
 password = "secret"
 ```
@@ -223,7 +267,7 @@ name = "Active Database Connections"
 schedule_seconds = 60
 query = "SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active'"
 database_url = "localhost:5432/postgres"
-database_type = "postgres"
+database_type = "postgresql"
 username = "admin"
 password = "secret"
 mode = "value"
@@ -237,7 +281,7 @@ name = "Orders Table Size"
 schedule_seconds = 300
 query = "SELECT COUNT(*) FROM orders"
 database_url = "db.prod.com:5432/sales"
-database_type = "postgres"
+database_type = "postgresql"
 username = "readonly"
 password = "pass"
 timeout_seconds = 60
@@ -251,7 +295,7 @@ name = "Recent Application Errors"
 schedule_seconds = 300
 query = "SELECT id, level, message, created_at FROM logs WHERE level = 'ERROR' ORDER BY created_at DESC LIMIT 20"
 database_url = "localhost:5432/app"
-database_type = "postgres"
+database_type = "postgresql"
 username = "monitor"
 password = "secret"
 mode = "json"
@@ -292,7 +336,7 @@ FROM pg_stat_activity
 WHERE wait_event IS NOT NULL
 """
 database_url = "localhost:5432/postgres"
-database_type = "postgres"
+database_type = "postgresql"
 username = "admin"
 password = "secret"
 mode = "json"
@@ -309,7 +353,7 @@ name = "Primary - Latest Order ID"
 schedule_seconds = 300
 query = "SELECT MAX(id) FROM orders"
 database_url = "primary.db.com:5432/sales"
-database_type = "postgres"
+database_type = "postgresql"
 username = "user"
 password = "pass"
 target_id = "db-primary"
@@ -321,7 +365,7 @@ name = "Replica - Latest Order ID"
 schedule_seconds = 300
 query = "SELECT MAX(id) FROM orders"
 database_url = "replica.db.com:5432/sales"
-database_type = "postgres"
+database_type = "postgresql"
 username = "user"
 password = "pass"
 target_id = "db-replica"
@@ -588,6 +632,7 @@ SHOW GRANTS FOR 'monitoring'@'%';
 - Query returns non-numeric data in first cell
 - Query returns empty result set
 - First column contains NULL
+- Unsupported data type (e.g., DATE, TIME, UUID)
 **Solutions**:
 ```toml
 # Ensure query returns numeric in first column
@@ -596,6 +641,8 @@ query = "SELECT COUNT(*)::float FROM users"
 # Or cast to numeric
 query = "SELECT CAST(value AS DECIMAL) FROM metrics LIMIT 1"
 ```
+
+**Note on MySQL/MariaDB**: Aggregate functions like `SUM()` and `AVG()` return DECIMAL type values, which are properly converted to numeric values. Integer columns work correctly with these aggregates.
 
 #### JSON Truncation
 **Symptom**: `json_truncated = true` frequently

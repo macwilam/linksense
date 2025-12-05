@@ -73,6 +73,7 @@ pub enum RawMetricData {
     Bandwidth(RawBandwidthMetric),
     #[cfg(feature = "sql-tasks")]
     SqlQuery(RawSqlQueryMetric),
+    Snmp(RawSnmpMetric),
 }
 
 /// Aggregated measurement data over a time period
@@ -88,6 +89,7 @@ pub enum AggregatedMetricData {
     Bandwidth(AggregatedBandwidthMetric),
     #[cfg(feature = "sql-tasks")]
     SqlQuery(AggregatedSqlQueryMetric),
+    Snmp(AggregatedSnmpMetric),
 }
 
 /// Raw ping measurement data
@@ -467,6 +469,49 @@ pub struct AggregatedSqlQueryMetric {
     pub json_truncated_count: u32,
 }
 
+/// Raw SNMP query measurement data
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RawSnmpMetric {
+    /// Query response time in milliseconds
+    pub response_time_ms: Option<f64>,
+    /// Whether the query was successful
+    pub success: bool,
+    /// Retrieved value as string (any SNMP type converted to string)
+    pub value: Option<String>,
+    /// SNMP data type name (e.g., "Integer", "OctetString", "Counter32")
+    pub value_type: Option<String>,
+    /// OID that was queried
+    pub oid_queried: String,
+    /// Error message if the query failed
+    pub error: Option<String>,
+    /// Optional target identifier for grouping/filtering
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+}
+
+/// Aggregated SNMP metrics over a time period
+/// Note: Since SNMP tasks run at minimum 60s intervals, aggregation typically contains 1 sample
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AggregatedSnmpMetric {
+    /// Success rate as a percentage (0.0 to 100.0)
+    pub success_rate_percent: f64,
+    /// Average response time in milliseconds
+    pub avg_response_time_ms: f64,
+    /// Number of successful queries
+    pub successful_queries: u32,
+    /// Number of failed queries
+    pub failed_queries: u32,
+    /// First retrieved value in the period (as string)
+    pub first_value: Option<String>,
+    /// SNMP data type of first_value
+    pub first_value_type: Option<String>,
+    /// OID that was queried
+    pub oid_queried: String,
+    /// Optional target identifier for grouping/filtering
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+}
+
 impl MetricData {
     /// Create a new metric data entry with current timestamp
     pub fn new(task_name: String, task_type: crate::config::TaskType, data: RawMetricData) -> Self {
@@ -490,6 +535,7 @@ impl MetricData {
             RawMetricData::Bandwidth(metric) => metric.success,
             #[cfg(feature = "sql-tasks")]
             RawMetricData::SqlQuery(metric) => metric.success,
+            RawMetricData::Snmp(metric) => metric.success,
         }
     }
 }

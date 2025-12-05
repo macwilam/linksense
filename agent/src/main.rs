@@ -31,6 +31,7 @@ mod task_dns;
 mod task_http;
 mod task_http_content;
 mod task_ping;
+mod task_snmp;
 #[cfg(feature = "sql-tasks")]
 mod task_sql;
 mod task_tcp;

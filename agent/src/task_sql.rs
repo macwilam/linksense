@@ -255,6 +255,7 @@ async fn execute_json_mode(
 /// Convert rsql_drivers Value to f64 for Value mode
 #[cfg(feature = "sql-tasks")]
 fn value_to_f64(value: &Value) -> Option<f64> {
+    use std::str::FromStr;
     match value {
         Value::I8(v) => Some(*v as f64),
         Value::I16(v) => Some(*v as f64),
@@ -271,7 +272,9 @@ fn value_to_f64(value: &Value) -> Option<f64> {
         Value::String(s) => s.parse().ok(),
         Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         Value::Null => None,
-        // Decimal, Date, Time, DateTime, Uuid, Bytes, Array, Map - not convertible to simple f64
+        // Decimal - MySQL returns SUM/AVG as Decimal type
+        Value::Decimal(d) => f64::from_str(&d.to_string()).ok(),
+        // Date, Time, DateTime, Uuid, Bytes, Array, Map - not convertible to simple f64
         _ => None,
     }
 }
