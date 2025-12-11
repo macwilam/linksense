@@ -155,6 +155,7 @@ impl TaskExecutor {
                     TaskType::Bandwidth => self.execute_bandwidth_task(task_config).await,
                     #[cfg(feature = "sql-tasks")]
                     TaskType::SqlQuery => self.execute_sql_query_task(task_config).await,
+                    #[cfg(feature = "snmp-tasks")]
                     TaskType::Snmp => self.execute_snmp_task(task_config).await,
                 }
             } => task_result,
@@ -643,6 +644,7 @@ impl TaskExecutor {
     }
 
     /// Executes an SNMP query task
+    #[cfg(feature = "snmp-tasks")]
     async fn execute_snmp_task(&self, task_config: &TaskConfig) -> Result<MetricData> {
         debug!("Executing SNMP task: {}", task_config.name);
 

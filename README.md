@@ -6,7 +6,7 @@
 
 A high-performance, async Rust-based distributed network monitoring solution designed for deploying multiple lightweight agents that collect and report network performance metrics to a centralized server.
 
-**BETA VERSION:** LinkSense is currently in beta. The software is feature-complete and fully functional, but has undergone only preliminary testing. All agent and server tasks are being actively tested. Note: The SQL task feature is in alpha stage and requires the `sql-tasks` feature flag.
+**BETA VERSION:** LinkSense is currently in beta. The software is feature-complete and fully functional, but has undergone only preliminary testing. All agent and server tasks are being actively tested. Note: The SQL and SNMP task features are in alpha stage and require the `sql-tasks` and `snmp-tasks` feature flags respectively.
 
 ## 🎯 What is LinkSense?
 
@@ -31,7 +31,11 @@ LinkSense supports eight task types, each optimized for specific monitoring need
 | **HTTP Content** | Response validation | Status code, regex match |
 | **DNS Query** | Resolution performance | Query time, record count |
 | **Bandwidth** | Throughput testing | Mbps, transfer time |
-| **SQL Query** | Database health | Query time, row count |
+| **SQL Query**¹ | Database health | Query time, row count |
+| **SNMP Query**² | Network device monitoring | Response time, OID values |
+
+¹ Requires `sql-tasks` feature flag  
+² Requires `snmp-tasks` feature flag and OpenSSL (`libssl-dev`)
 
 Each task type has detailed documentation in `TASK_*.md` files.
 
@@ -192,11 +196,17 @@ LinkSense is built with performance and security as top priorities:
 ### Build
 
 ```bash
-# Build all components
+# Build all components (core features only)
 cargo build --release
 
 # Build with SQL monitoring support
 cargo build --release --features sql-tasks
+
+# Build with SNMP monitoring support (requires libssl-dev)
+cargo build --release --features snmp-tasks
+
+# Build with all optional features
+cargo build --release --features "sql-tasks,snmp-tasks"
 ```
 
 ### Installation
@@ -218,7 +228,8 @@ cargo build --release --features sql-tasks
 - **[TASK_HTTP_CONTENT.md](TASK_HTTP_CONTENT.md)** - HTTP response validation
 - **[TASK_DNS.md](TASK_DNS.md)** - DNS query monitoring
 - **[TASK_BANDWIDTH.md](TASK_BANDWIDTH.md)** - Bandwidth testing
-- **[TASK_SQL.md](TASK_SQL.md)** - Database query monitoring
+- **[TASK_SQL.md](TASK_SQL.md)** - Database query monitoring (requires `sql-tasks` feature)
+- **[TASK_SNMP.md](TASK_SNMP.md)** - SNMP device monitoring (requires `snmp-tasks` feature)
 
 ### Architecture and Implementation
 - **[README_DATABASE.md](README_DATABASE.md)** - Database schema and design

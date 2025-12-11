@@ -117,6 +117,7 @@ pub(super) fn generate_aggregated_metrics(
     period_start: u64,
     period_end: u64,
 ) -> Result<Option<AggregatedMetrics>> {
+    // First query: get aggregate statistics
     let mut stmt = conn.prepare(
         r#"
         SELECT
@@ -125,7 +126,6 @@ pub(super) fn generate_aggregated_metrics(
             MAX(CASE WHEN success = 1 AND query_time_ms IS NOT NULL THEN query_time_ms END) as max_query_time,
             SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful_queries,
             SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed_queries,
-            GROUP_CONCAT(DISTINCT resolved_addresses) as all_resolved_json,
             MAX(domain_queried) as domain_queried,
             AVG(CASE WHEN correct_resolution = 1 THEN 1.0 ELSE 0.0 END) * 100.0 as correct_resolution_percent,
             (SELECT target_id FROM raw_metric_dns
@@ -154,18 +154,6 @@ pub(super) fn generate_aggregated_metrics(
                 0.0
             };
 
-            // Parse all resolved addresses from JSON strings
-            let mut all_resolved_addresses = HashSet::new();
-            if let Ok(all_resolved_json) = row.get::<_, String>("all_resolved_json") {
-                for json_str in all_resolved_json.split(',') {
-                    if let Ok(addresses) = serde_json::from_str::<Vec<String>>(json_str.trim()) {
-                        for addr in addresses {
-                            all_resolved_addresses.insert(addr);
-                        }
-                    }
-                }
-            }
-
             let domain_queried: String = row
                 .get("domain_queried")
                 .unwrap_or_else(|_| "unknown".to_string());
@@ -175,33 +163,81 @@ pub(super) fn generate_aggregated_metrics(
 
             let target_id: Option<String> = row.get("first_target_id").ok();
 
-            Ok(Some(AggregatedDnsMetric {
+            Ok(Some((
                 success_rate_percent,
-                avg_query_time_ms: row.get("avg_query_time").unwrap_or(0.0),
-                max_query_time_ms: row.get("max_query_time").unwrap_or(0.0),
-                successful_queries: successful_queries as u32,
-                failed_queries: failed_queries as u32,
-                all_resolved_addresses,
+                row.get::<_, f64>("avg_query_time").unwrap_or(0.0),
+                row.get::<_, f64>("max_query_time").unwrap_or(0.0),
+                successful_queries as u32,
+                failed_queries as u32,
                 domain_queried,
                 correct_resolution_percent,
                 target_id,
-            }))
+            )))
         },
     )?;
 
-    if let Some(dns_metric) = row {
-        let total_samples = dns_metric.successful_queries + dns_metric.failed_queries;
-        return Ok(Some(AggregatedMetrics::new(
-            task_name.to_string(),
-            TaskType::DnsQuery,
-            period_start,
-            period_end,
-            total_samples,
-            AggregatedMetricData::DnsQuery(dns_metric),
-        )));
+    let Some((
+        success_rate_percent,
+        avg_query_time_ms,
+        max_query_time_ms,
+        successful_queries,
+        failed_queries,
+        domain_queried,
+        correct_resolution_percent,
+        target_id,
+    )) = row
+    else {
+        return Ok(None);
+    };
+
+    // Second query: collect all resolved addresses separately to avoid GROUP_CONCAT issues
+    // GROUP_CONCAT with JSON arrays doesn't work well because commas in JSON conflict with the separator
+    let mut all_resolved_addresses = HashSet::new();
+    let mut addr_stmt = conn.prepare(
+        r#"
+        SELECT DISTINCT resolved_addresses
+        FROM raw_metric_dns
+        WHERE task_name = ?1 AND timestamp >= ?2 AND timestamp < ?3
+          AND resolved_addresses IS NOT NULL
+        "#,
+    )?;
+
+    let rows = addr_stmt.query_map(
+        params![task_name, period_start as i64, period_end as i64],
+        |row| row.get::<_, String>(0),
+    )?;
+
+    for json_result in rows {
+        if let Ok(json_str) = json_result {
+            if let Ok(addresses) = serde_json::from_str::<Vec<String>>(&json_str) {
+                for addr in addresses {
+                    all_resolved_addresses.insert(addr);
+                }
+            }
+        }
     }
 
-    Ok(None)
+    let dns_metric = AggregatedDnsMetric {
+        success_rate_percent,
+        avg_query_time_ms,
+        max_query_time_ms,
+        successful_queries,
+        failed_queries,
+        all_resolved_addresses,
+        domain_queried,
+        correct_resolution_percent,
+        target_id,
+    };
+
+    let total_samples = dns_metric.successful_queries + dns_metric.failed_queries;
+    Ok(Some(AggregatedMetrics::new(
+        task_name.to_string(),
+        TaskType::DnsQuery,
+        period_start,
+        period_end,
+        total_samples,
+        AggregatedMetricData::DnsQuery(dns_metric),
+    )))
 }
 
 /// Store aggregated DNS metric

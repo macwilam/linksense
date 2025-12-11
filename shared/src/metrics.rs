@@ -73,6 +73,7 @@ pub enum RawMetricData {
     Bandwidth(RawBandwidthMetric),
     #[cfg(feature = "sql-tasks")]
     SqlQuery(RawSqlQueryMetric),
+    #[cfg(feature = "snmp-tasks")]
     Snmp(RawSnmpMetric),
 }
 
@@ -89,6 +90,7 @@ pub enum AggregatedMetricData {
     Bandwidth(AggregatedBandwidthMetric),
     #[cfg(feature = "sql-tasks")]
     SqlQuery(AggregatedSqlQueryMetric),
+    #[cfg(feature = "snmp-tasks")]
     Snmp(AggregatedSnmpMetric),
 }
 
@@ -470,6 +472,7 @@ pub struct AggregatedSqlQueryMetric {
 }
 
 /// Raw SNMP query measurement data
+#[cfg(feature = "snmp-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RawSnmpMetric {
     /// Query response time in milliseconds
@@ -491,6 +494,7 @@ pub struct RawSnmpMetric {
 
 /// Aggregated SNMP metrics over a time period
 /// Note: Since SNMP tasks run at minimum 60s intervals, aggregation typically contains 1 sample
+#[cfg(feature = "snmp-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AggregatedSnmpMetric {
     /// Success rate as a percentage (0.0 to 100.0)
@@ -535,6 +539,7 @@ impl MetricData {
             RawMetricData::Bandwidth(metric) => metric.success,
             #[cfg(feature = "sql-tasks")]
             RawMetricData::SqlQuery(metric) => metric.success,
+            #[cfg(feature = "snmp-tasks")]
             RawMetricData::Snmp(metric) => metric.success,
         }
     }

@@ -145,6 +145,7 @@ pub fn enqueue_metric_for_send(
         AggregatedMetricData::HttpContent(_) => "http_content",
         AggregatedMetricData::DnsQuery(_) => "dns",
         AggregatedMetricData::Bandwidth(_) => "bandwidth",
+        #[cfg(feature = "snmp-tasks")]
         AggregatedMetricData::Snmp(_) => "snmp",
         #[cfg(feature = "sql-tasks")]
         AggregatedMetricData::SqlQuery(_) => "sql_query",
@@ -396,6 +397,7 @@ pub fn fetch_metric_by_type_and_id(
         "http_content" => super::db_http_content::load_aggregated_metric(conn, row_id),
         "dns" => super::db_dns::load_aggregated_metric(conn, row_id),
         "bandwidth" => super::db_bandwidth::load_aggregated_metric(conn, row_id),
+        #[cfg(feature = "snmp-tasks")]
         "snmp" => super::db_snmp::load_aggregated_metric(conn, row_id),
         #[cfg(feature = "sql-tasks")]
         "sql_query" => super::db_sql::load_aggregated_metric(conn, row_id),

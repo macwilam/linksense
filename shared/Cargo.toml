@@ -10,6 +10,7 @@ description = "Shared data structures and utilities for the network monitoring s
 [features]
 default = []
 sql-tasks = []
+snmp-tasks = []
 
 [dependencies]
 serde.workspace = true

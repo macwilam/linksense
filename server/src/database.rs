@@ -15,6 +15,7 @@ mod db_dns;
 mod db_http;
 mod db_http_content;
 mod db_ping;
+#[cfg(feature = "snmp-tasks")]
 mod db_snmp;
 #[cfg(feature = "sql-tasks")]
 mod db_sql;
@@ -97,6 +98,7 @@ impl ServerDatabase {
         db_bandwidth::create_table(conn)?;
         #[cfg(feature = "sql-tasks")]
         db_sql::create_table(conn)?;
+        #[cfg(feature = "snmp-tasks")]
         db_snmp::create_table(conn)?;
 
         // Create agent health checks table
@@ -256,6 +258,7 @@ impl ServerDatabase {
                 AggregatedMetricData::SqlQuery(sql_data) => {
                     db_sql::store_metric(&tx, agent_id, metric, sql_data)?;
                 }
+                #[cfg(feature = "snmp-tasks")]
                 AggregatedMetricData::Snmp(snmp_data) => {
                     db_snmp::store_metric(&tx, agent_id, metric, snmp_data)?;
                 }
@@ -399,7 +402,10 @@ impl ServerDatabase {
         #[cfg(not(feature = "sql-tasks"))]
         let agg_sql_query_deleted = 0;
 
+        #[cfg(feature = "snmp-tasks")]
         let agg_snmp_deleted = db_snmp::cleanup_old_data(conn, cutoff_time as i64)?;
+        #[cfg(not(feature = "snmp-tasks"))]
+        let agg_snmp_deleted = 0;
 
         let total_metrics_deleted = agg_ping_deleted
             + agg_tcp_deleted
@@ -523,8 +529,11 @@ impl ServerDatabase {
         #[cfg(not(feature = "sql-tasks"))]
         let agg_sql_query_count: i64 = 0;
 
+        #[cfg(feature = "snmp-tasks")]
         let agg_snmp_count: i64 =
             tx.query_row("SELECT COUNT(*) FROM agg_metric_snmp", [], |row| row.get(0))?;
+        #[cfg(not(feature = "snmp-tasks"))]
+        let agg_snmp_count: i64 = 0;
 
         let total_metrics = agg_ping_count
             + agg_tcp_count

@@ -22,6 +22,7 @@ mod db_http;
 mod db_http_content;
 mod db_ping;
 mod db_queue;
+#[cfg(feature = "snmp-tasks")]
 mod db_snmp;
 #[cfg(feature = "sql-tasks")]
 mod db_sql;
@@ -98,6 +99,7 @@ impl AgentDatabase {
         db_bandwidth::create_tables(conn)?;
         #[cfg(feature = "sql-tasks")]
         db_sql::create_tables(conn)?;
+        #[cfg(feature = "snmp-tasks")]
         db_snmp::create_tables(conn)?;
 
         // Create queue table
@@ -163,6 +165,7 @@ impl AgentDatabase {
             }
             #[cfg(feature = "sql-tasks")]
             RawMetricData::SqlQuery(sql_data) => db_sql::store_raw_metric(conn, metric, sql_data),
+            #[cfg(feature = "snmp-tasks")]
             RawMetricData::Snmp(snmp_data) => db_snmp::store_raw_metric(conn, metric, snmp_data),
         }
     }
@@ -211,6 +214,7 @@ impl AgentDatabase {
             TaskType::SqlQuery => {
                 db_sql::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
+            #[cfg(feature = "snmp-tasks")]
             TaskType::Snmp => {
                 db_snmp::generate_aggregated_metrics(conn, task_name, period_start, period_end)
             }
@@ -246,7 +250,10 @@ impl AgentDatabase {
         #[cfg(not(feature = "sql-tasks"))]
         let (raw_sql, agg_sql) = (0, 0);
 
+        #[cfg(feature = "snmp-tasks")]
         let (raw_snmp, agg_snmp) = db_snmp::cleanup_old_data(conn, cutoff_time)?;
+        #[cfg(not(feature = "snmp-tasks"))]
+        let (raw_snmp, agg_snmp) = (0, 0);
 
         let total_raw_deleted = raw_ping
             + raw_tcp
@@ -381,6 +388,7 @@ impl AgentDatabase {
             AggregatedMetricData::SqlQuery(sql_data) => {
                 db_sql::store_aggregated_metric(conn, metrics, sql_data)?
             }
+            #[cfg(feature = "snmp-tasks")]
             AggregatedMetricData::Snmp(snmp_data) => {
                 db_snmp::store_aggregated_metric(conn, metrics, snmp_data)?
             }

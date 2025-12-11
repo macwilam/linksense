@@ -249,6 +249,7 @@ impl<'de> Deserialize<'de> for TaskConfig {
                         })?;
                         TaskParams::SqlQuery(params)
                     }
+                    #[cfg(feature = "snmp-tasks")]
                     TaskType::Snmp => {
                         let params: SnmpParams = params_value.try_into().map_err(|e| {
                             Error::custom(format!("Failed to parse Snmp task parameters: {}", e))
@@ -294,7 +295,8 @@ pub enum TaskType {
     /// SQL query test (requires sql-tasks feature)
     #[cfg(feature = "sql-tasks")]
     SqlQuery,
-    /// SNMP query test
+    /// SNMP query test (requires snmp-tasks feature)
+    #[cfg(feature = "snmp-tasks")]
     Snmp,
 }
 
@@ -323,6 +325,7 @@ pub enum TaskParams {
     Bandwidth(BandwidthParams),
     #[cfg(feature = "sql-tasks")]
     SqlQuery(SqlQueryParams),
+    #[cfg(feature = "snmp-tasks")]
     Snmp(SnmpParams),
 }
 
@@ -522,6 +525,7 @@ pub enum DnsRecordType {
 }
 
 /// SNMP protocol version
+#[cfg(feature = "snmp-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SnmpVersion {
@@ -532,6 +536,7 @@ pub enum SnmpVersion {
 }
 
 /// SNMPv3 authentication protocol
+#[cfg(feature = "snmp-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SnmpAuthProtocol {
@@ -546,6 +551,7 @@ pub enum SnmpAuthProtocol {
 }
 
 /// SNMPv3 security level
+#[cfg(feature = "snmp-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SnmpSecurityLevel {
@@ -557,6 +563,7 @@ pub enum SnmpSecurityLevel {
 }
 
 /// Parameters for SNMP query tasks
+#[cfg(feature = "snmp-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SnmpParams {
     /// Target host (IP or hostname), optionally with port (default: 161)
@@ -807,6 +814,7 @@ impl TaskConfig {
         }
 
         // SNMP tasks have a minimum schedule of 60 seconds
+        #[cfg(feature = "snmp-tasks")]
         if self.task_type == TaskType::Snmp && self.schedule_seconds < 60 {
             return Err(crate::MonitoringError::Validation(
                 format!("Invalid schedule_seconds for SNMP task: {}. SNMP tasks must have schedule_seconds >= 60.", self.schedule_seconds)
@@ -943,6 +951,7 @@ impl TaskConfig {
                     .into());
                 }
             }
+            #[cfg(feature = "snmp-tasks")]
             (TaskType::Snmp, TaskParams::Snmp(params)) => {
                 if params.host.is_empty() {
                     return Err(crate::MonitoringError::Validation(
@@ -1025,6 +1034,7 @@ impl TaskConfig {
             TaskParams::Bandwidth(params) => params.timeout_seconds,
             #[cfg(feature = "sql-tasks")]
             TaskParams::SqlQuery(params) => params.timeout_seconds,
+            #[cfg(feature = "snmp-tasks")]
             TaskParams::Snmp(params) => params.timeout_seconds,
         }
     }
