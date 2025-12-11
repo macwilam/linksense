@@ -286,7 +286,7 @@ impl HealthMonitor {
         // Agents aggregate metrics every 60 seconds
         const AGGREGATION_WINDOW_SECONDS: u64 = 60;
 
-        let config_manager = self.config_manager.lock().await;
+        let mut config_manager = self.config_manager.lock().await;
 
         // Get agent's tasks configuration
         let tasks_toml = config_manager

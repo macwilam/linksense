@@ -5,7 +5,9 @@
 
 use anyhow::{Context, Result};
 use shared::config::ServerConfig;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, UNIX_EPOCH};
 use tracing::{debug, info};
 
 /// The expected name of the configuration file.
@@ -21,6 +23,18 @@ pub struct ConfigManager {
     /// to represent the unloaded state, although the constructor ensures it's
     /// always `Some` on success.
     pub server_config: Option<ServerConfig>,
+
+    /// Cache: agent_id -> (content, hash, compressed, file mtime, size)
+    agent_config_cache: HashMap<String, AgentConfigCache>,
+}
+
+/// Cached agent configuration data
+struct AgentConfigCache {
+    content: String,
+    hash: String,
+    compressed: String,
+    mtime: Duration,
+    size: u64,
 }
 
 impl ConfigManager {
@@ -47,6 +61,7 @@ impl ConfigManager {
         let mut manager = Self {
             config_path,
             server_config: None,
+            agent_config_cache: HashMap::new(),
         };
 
         // The configuration is loaded as part of the creation process.
@@ -184,8 +199,18 @@ impl ConfigManager {
                     let current = self.server_config.as_ref().expect(
                         "Server configuration should be loaded after successful load_config()",
                     );
+
                     // A simple comparison of key fields. A more robust implementation
                     // might use `PartialEq` on the `ServerConfig` struct.
+                    // Clear agent config cache if directory changed
+                    if old.agent_configs_dir != current.agent_configs_dir {
+                        debug!(
+                            "Agent configs directory changed from {} to {}, clearing cache",
+                            old.agent_configs_dir, current.agent_configs_dir
+                        );
+                        self.agent_config_cache.clear();
+                    }
+
                     if old.listen_address != current.listen_address
                         || old.data_retention_days != current.data_retention_days
                         || old.agent_configs_dir != current.agent_configs_dir
@@ -262,15 +287,51 @@ impl ConfigManager {
         }
     }
 
-    /// Get tasks.toml content for a specific agent
-    pub fn get_agent_tasks_config(&self, agent_id: &str) -> Result<String> {
-        let config = self.server_config.as_ref().expect(
-            "Server configuration not loaded. This should not happen as config is loaded in new().",
-        );
-        let configs_dir = std::path::Path::new(&config.agent_configs_dir);
-        let tasks_path = configs_dir.join(format!("{}.toml", agent_id));
+    /// Get tasks.toml content for a specific agent (cached)
+    pub fn get_agent_tasks_config(&mut self, agent_id: &str) -> Result<String> {
+        self.ensure_cache_fresh(agent_id)?;
+        Ok(self
+            .agent_config_cache
+            .get(agent_id)
+            .expect("cache populated")
+            .content
+            .clone())
+    }
+
+    /// Calculate BLAKE3 hash of agent's tasks.toml config (cached)
+    pub fn get_agent_tasks_config_hash(&mut self, agent_id: &str) -> Result<String> {
+        self.ensure_cache_fresh(agent_id)?;
+        Ok(self
+            .agent_config_cache
+            .get(agent_id)
+            .expect("cache populated")
+            .hash
+            .clone())
+    }
+
+    /// Get gzipped and base64-encoded tasks.toml for an agent (cached)
+    pub fn get_agent_tasks_config_compressed(&mut self, agent_id: &str) -> Result<String> {
+        self.ensure_cache_fresh(agent_id)?;
+        Ok(self
+            .agent_config_cache
+            .get(agent_id)
+            .expect("cache populated")
+            .compressed
+            .clone())
+    }
+
+    /// Check if cache is fresh; reload if file changed
+    fn ensure_cache_fresh(&mut self, agent_id: &str) -> Result<()> {
+        let config = self
+            .server_config
+            .as_ref()
+            .expect("Server configuration not loaded");
+        let tasks_path = Path::new(&config.agent_configs_dir).join(format!("{agent_id}.toml"));
 
         if !tasks_path.exists() {
+            if self.agent_config_cache.remove(agent_id).is_some() {
+                debug!("Cleared stale cache for removed agent config: {}", agent_id);
+            }
             return Err(anyhow::anyhow!(
                 "Tasks configuration not found for agent {}: {}",
                 agent_id,
@@ -278,35 +339,46 @@ impl ConfigManager {
             ));
         }
 
-        std::fs::read_to_string(&tasks_path)
-            .with_context(|| format!("Failed to read {}.toml for agent {}", agent_id, agent_id))
-    }
+        let metadata = std::fs::metadata(&tasks_path)?;
+        let mtime = metadata
+            .modified()?
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let size = metadata.len();
 
-    /// Calculate BLAKE3 hash of agent's tasks.toml config
-    pub fn get_agent_tasks_config_hash(&self, agent_id: &str) -> Result<String> {
-        let tasks_content = self.get_agent_tasks_config(agent_id)?;
-        let hash = blake3::hash(tasks_content.as_bytes());
-        Ok(hash.to_hex().to_string())
-    }
+        if let Some(cached) = self.agent_config_cache.get(agent_id) {
+            // Check both mtime and size to catch file replacements with same/older mtime
+            if cached.mtime == mtime && cached.size == size {
+                return Ok(()); // cache hit
+            }
+        }
 
-    /// Get gzipped and base64-encoded tasks.toml for an agent
-    pub fn get_agent_tasks_config_compressed(&self, agent_id: &str) -> Result<String> {
-        let tasks_content = self.get_agent_tasks_config(agent_id)?;
+        // Cache miss/stale -> reload
+        let content = std::fs::read_to_string(&tasks_path)
+            .with_context(|| format!("Failed to read {}.toml for agent {}", agent_id, agent_id))?;
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-        // Compress with gzip
-        use std::io::Write;
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder
-            .write_all(tasks_content.as_bytes())
-            .context("Failed to compress tasks config")?;
-        let compressed_data = encoder
-            .finish()
-            .context("Failed to finish gzip compression")?;
+        let compressed = {
+            use base64::Engine;
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(content.as_bytes())?;
+            base64::engine::general_purpose::STANDARD.encode(encoder.finish()?)
+        };
 
-        // Encode as base64
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&compressed_data);
-        Ok(encoded)
+        self.agent_config_cache.insert(
+            agent_id.to_string(),
+            AgentConfigCache {
+                content,
+                hash,
+                compressed,
+                mtime,
+                size,
+            },
+        );
+
+        Ok(())
     }
 
     /// Override server configuration values and persist to disk
@@ -371,6 +443,8 @@ impl ConfigManager {
                 );
                 server_config.agent_configs_dir = dir;
                 config_changed = true;
+                // Clear cache since directory changed
+                self.agent_config_cache.clear();
             }
         }
 

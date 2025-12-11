@@ -179,7 +179,7 @@ host = "8.8.8.8"
     let config_path = temp_dir.path().join("server.toml");
     std::fs::write(&config_path, server_toml).unwrap();
 
-    let config_manager = ConfigManager::new(config_path).unwrap();
+    let mut config_manager = ConfigManager::new(config_path).unwrap();
     let result = config_manager.get_agent_tasks_config("agent1");
     assert!(result.is_ok());
     assert_eq!(result.unwrap().trim(), tasks_toml.trim());
@@ -199,7 +199,7 @@ fn test_get_agent_tasks_config_missing() {
     let config_path = temp_dir.path().join("server.toml");
     std::fs::write(&config_path, server_toml).unwrap();
 
-    let config_manager = ConfigManager::new(config_path).unwrap();
+    let mut config_manager = ConfigManager::new(config_path).unwrap();
     let result = config_manager.get_agent_tasks_config("nonexistent");
     assert!(result.is_err());
 }
@@ -221,7 +221,7 @@ fn test_get_agent_tasks_config_hash_consistency() {
     let config_path = temp_dir.path().join("server.toml");
     std::fs::write(&config_path, server_toml).unwrap();
 
-    let config_manager = ConfigManager::new(config_path).unwrap();
+    let mut config_manager = ConfigManager::new(config_path).unwrap();
     let hash1 = config_manager
         .get_agent_tasks_config_hash("agent1")
         .unwrap();
@@ -250,7 +250,7 @@ fn test_get_agent_tasks_config_hash_changes() {
     let config_path = temp_dir.path().join("server.toml");
     std::fs::write(&config_path, server_toml).unwrap();
 
-    let config_manager = ConfigManager::new(config_path).unwrap();
+    let mut config_manager = ConfigManager::new(config_path).unwrap();
     let hash1 = config_manager
         .get_agent_tasks_config_hash("agent1")
         .unwrap();
@@ -282,7 +282,7 @@ fn test_get_agent_tasks_config_compressed_valid() {
     let config_path = temp_dir.path().join("server.toml");
     std::fs::write(&config_path, server_toml).unwrap();
 
-    let config_manager = ConfigManager::new(config_path).unwrap();
+    let mut config_manager = ConfigManager::new(config_path).unwrap();
     let compressed = config_manager
         .get_agent_tasks_config_compressed("agent1")
         .unwrap();

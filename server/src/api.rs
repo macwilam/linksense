@@ -423,7 +423,7 @@ async fn handle_metrics(
 
     // Compare config hash to detect if agent needs to update
     let config_status = {
-        let config_manager = state.config_manager.lock().await;
+        let mut config_manager = state.config_manager.lock().await;
         match config_manager.get_agent_tasks_config_hash(&request.agent_id) {
             Ok(server_hash) => {
                 if server_hash == request.config_checksum {
@@ -594,7 +594,7 @@ async fn handle_configs(
 
     // Get agent's tasks.toml configuration
     let tasks_toml_compressed = {
-        let config_manager = state.config_manager.lock().await;
+        let mut config_manager = state.config_manager.lock().await;
 
         match config_manager.get_agent_tasks_config_compressed(agent_id) {
             Ok(compressed) => compressed,
@@ -722,7 +722,7 @@ async fn handle_config_verify(
 
     // Get server's current config hash for this agent
     let server_hash = {
-        let config_manager = state.config_manager.lock().await;
+        let mut config_manager = state.config_manager.lock().await;
         match config_manager.get_agent_tasks_config_hash(&request.agent_id) {
             Ok(hash) => hash,
             Err(e) => {
@@ -767,7 +767,7 @@ async fn handle_config_verify(
 
         // Get the new compressed config to send to the agent
         let tasks_toml_compressed = {
-            let config_manager = state.config_manager.lock().await;
+            let mut config_manager = state.config_manager.lock().await;
             match config_manager.get_agent_tasks_config_compressed(&request.agent_id) {
                 Ok(compressed) => Some(compressed),
                 Err(e) => {
