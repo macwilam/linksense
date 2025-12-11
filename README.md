@@ -6,7 +6,7 @@
 
 A high-performance, async Rust-based distributed network monitoring solution designed for deploying multiple lightweight agents that collect and report network performance metrics to a centralized server.
 
-**BETA VERSION:** LinkSense is currently in beta. The software is feature-complete and fully functional, but has undergone only preliminary testing. All agent and server tasks are being actively tested. Note: The SQL and SNMP task features are in alpha stage and require the `sql-tasks` and `snmp-tasks` feature flags respectively.
+**RELEASE CANDIDATE VERSION:** LinkSense is currently in RC. The software is feature-complete and fully functional. It has undergone long run testing. All agent and server tasks are being actively tested. Note: The SQL and SNMP task features are in beta stage and require the `sql-tasks` and `snmp-tasks` feature flags respectively. 
 
 ## 🎯 What is LinkSense?
 
@@ -65,15 +65,15 @@ The system operates on a continuous cycle:
 ┌──────────────────────────────────────────────────────────┐
 │ AGENT - Continuous Monitoring                            │
 │                                                          │
-│  1. Execute Tasks (ping, HTTP, DNS, etc.)               │
-│     └─→ Store raw measurements in SQLite                │
+│  1. Execute Tasks (ping, HTTP, DNS, etc.)                │
+│     └─→ Store raw measurements in SQLite                 │
 │                                                          │
 │  2. Every 60 seconds: Aggregate                          │
 │     └─→ SQL GROUP BY → 1-minute summaries               │
 │                                                          │
 │  3. Send to Server                                       │
-│     └─→ POST /api/v1/metrics                            │
-│     └─→ Include BLAKE3 hash of current config           │
+│     └─→ POST /api/v1/metrics                             │
+│     └─→ Include BLAKE3 hash of current config            │
 └──────────────────────────────────────────────────────────┘
                          │
                          ↓
@@ -83,8 +83,8 @@ The system operates on a continuous cycle:
 │  1. Authenticate agent (API key validation)              │
 │                                                          │
 │  2. Compare configuration hash                           │
-│     ├─→ Match: Store metrics normally                   │
-│     └─→ Mismatch: Agent downloads new config            │
+│     ├─→ Match: Store metrics normally                    │
+│     └─→ Mismatch: Agent downloads new config             │
 │                                                          │
 │  3. Store metrics in SQLite (tagged with agent_id)       │
 │                                                          │
@@ -188,7 +188,7 @@ LinkSense is built with performance and security as top priorities:
 
 ### Prerequisites
 
-- Rust 1.70+ and Cargo
+- Rust 1.83+ and Cargo
 - SQLite (bundled with Rust builds)
 - Network connectivity between agents and server (for centralized mode)
 - Linux: For ICMP ping, add user to ping group or grant CAP_NET_RAW
