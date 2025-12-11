@@ -43,6 +43,7 @@ tower.workspace = true
 clap.workspace = true
 subtle.workspace = true
 futures-util.workspace = true
+notify.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -155,8 +155,8 @@ fn test_agent_configs_dir_validation() {
     assert!(agent_configs_dir.is_dir());
 }
 
-#[test]
-fn test_get_agent_tasks_config_existing() {
+#[tokio::test]
+async fn test_get_agent_config_existing() {
     let temp_dir = TempDir::new().unwrap();
     let agent_configs_dir = temp_dir.path().join("agent-configs");
     std::fs::create_dir_all(&agent_configs_dir).unwrap();
@@ -180,13 +180,16 @@ host = "8.8.8.8"
     std::fs::write(&config_path, server_toml).unwrap();
 
     let config_manager = ConfigManager::new(config_path).unwrap();
-    let result = config_manager.get_agent_tasks_config("agent1");
+    let result = config_manager.get_agent_config("agent1").await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap().trim(), tasks_toml.trim());
+    let cached = result.unwrap();
+    assert_eq!(cached.content.trim(), tasks_toml.trim());
+    assert!(!cached.hash.is_empty());
+    assert!(!cached.compressed.is_empty());
 }
 
-#[test]
-fn test_get_agent_tasks_config_missing() {
+#[tokio::test]
+async fn test_get_agent_config_missing() {
     let temp_dir = TempDir::new().unwrap();
     let agent_configs_dir = temp_dir.path().join("agent-configs");
     std::fs::create_dir_all(&agent_configs_dir).unwrap();
@@ -200,12 +203,12 @@ fn test_get_agent_tasks_config_missing() {
     std::fs::write(&config_path, server_toml).unwrap();
 
     let config_manager = ConfigManager::new(config_path).unwrap();
-    let result = config_manager.get_agent_tasks_config("nonexistent");
+    let result = config_manager.get_agent_config("nonexistent").await;
     assert!(result.is_err());
 }
 
-#[test]
-fn test_get_agent_tasks_config_hash_consistency() {
+#[tokio::test]
+async fn test_get_agent_config_hash_consistency() {
     let temp_dir = TempDir::new().unwrap();
     let agent_configs_dir = temp_dir.path().join("agent-configs");
     std::fs::create_dir_all(&agent_configs_dir).unwrap();
@@ -223,19 +226,23 @@ fn test_get_agent_tasks_config_hash_consistency() {
 
     let config_manager = ConfigManager::new(config_path).unwrap();
     let hash1 = config_manager
-        .get_agent_tasks_config_hash("agent1")
-        .unwrap();
+        .get_agent_config("agent1")
+        .await
+        .unwrap()
+        .hash;
     let hash2 = config_manager
-        .get_agent_tasks_config_hash("agent1")
-        .unwrap();
+        .get_agent_config("agent1")
+        .await
+        .unwrap()
+        .hash;
 
     // Same config should produce same hash
     assert_eq!(hash1, hash2);
     assert!(!hash1.is_empty());
 }
 
-#[test]
-fn test_get_agent_tasks_config_hash_changes() {
+#[tokio::test]
+async fn test_get_agent_config_hash_changes() {
     let temp_dir = TempDir::new().unwrap();
     let agent_configs_dir = temp_dir.path().join("agent-configs");
     std::fs::create_dir_all(&agent_configs_dir).unwrap();
@@ -252,21 +259,27 @@ fn test_get_agent_tasks_config_hash_changes() {
 
     let config_manager = ConfigManager::new(config_path).unwrap();
     let hash1 = config_manager
-        .get_agent_tasks_config_hash("agent1")
-        .unwrap();
+        .get_agent_config("agent1")
+        .await
+        .unwrap()
+        .hash;
 
-    // Modify config
+    // Modify config and invalidate cache
     std::fs::write(&tasks_path, "[[tasks]]\ntype = \"http_get\"\n").unwrap();
+    config_manager.invalidate_agent_cache("agent1").await;
+
     let hash2 = config_manager
-        .get_agent_tasks_config_hash("agent1")
-        .unwrap();
+        .get_agent_config("agent1")
+        .await
+        .unwrap()
+        .hash;
 
     // Hash should change
     assert_ne!(hash1, hash2);
 }
 
-#[test]
-fn test_get_agent_tasks_config_compressed_valid() {
+#[tokio::test]
+async fn test_get_agent_config_compressed_valid() {
     let temp_dir = TempDir::new().unwrap();
     let agent_configs_dir = temp_dir.path().join("agent-configs");
     std::fs::create_dir_all(&agent_configs_dir).unwrap();
@@ -283,14 +296,12 @@ fn test_get_agent_tasks_config_compressed_valid() {
     std::fs::write(&config_path, server_toml).unwrap();
 
     let config_manager = ConfigManager::new(config_path).unwrap();
-    let compressed = config_manager
-        .get_agent_tasks_config_compressed("agent1")
-        .unwrap();
+    let cached = config_manager.get_agent_config("agent1").await.unwrap();
 
     // Decode and decompress to verify
     use base64::Engine;
     let compressed_data = base64::engine::general_purpose::STANDARD
-        .decode(&compressed)
+        .decode(&cached.compressed)
         .unwrap();
     use std::io::Read;
     let mut decoder = flate2::read::GzDecoder::new(&compressed_data[..]);
@@ -406,4 +417,41 @@ fn test_override_and_persist_config_multiple_fields() {
     assert_eq!(server_config.agent_configs_dir, "/new/path");
     assert_eq!(server_config.bandwidth_test_size_mb, 50);
     assert_eq!(server_config.reconfigure_check_interval_seconds, 20);
+}
+
+#[tokio::test]
+async fn test_load_all_agent_configs() {
+    let temp_dir = TempDir::new().unwrap();
+    let agent_configs_dir = temp_dir.path().join("agent-configs");
+    std::fs::create_dir_all(&agent_configs_dir).unwrap();
+
+    // Create multiple agent config files
+    std::fs::write(
+        agent_configs_dir.join("agent1.toml"),
+        "[[tasks]]\ntype = \"ping\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        agent_configs_dir.join("agent2.toml"),
+        "[[tasks]]\ntype = \"http_get\"\n",
+    )
+    .unwrap();
+
+    let mut config = create_test_server_config();
+    config.agent_configs_dir = agent_configs_dir.to_string_lossy().to_string();
+    let server_toml = toml::to_string(&config).unwrap();
+    let config_path = temp_dir.path().join("server.toml");
+    std::fs::write(&config_path, server_toml).unwrap();
+
+    let config_manager = ConfigManager::new(config_path).unwrap();
+    let count = config_manager.load_all_agent_configs().await.unwrap();
+
+    assert_eq!(count, 2);
+
+    // Verify both configs are cached
+    let cached1 = config_manager.get_agent_config("agent1").await.unwrap();
+    let cached2 = config_manager.get_agent_config("agent2").await.unwrap();
+
+    assert!(cached1.content.contains("ping"));
+    assert!(cached2.content.contains("http_get"));
 }

@@ -130,6 +130,12 @@ async fn test_calculate_expected_entries() {
     };
     std::fs::write(&agent_config_path, tasks_toml).unwrap();
 
+    // Load the agent config into cache
+    {
+        let cm = config_manager.lock().await;
+        cm.reload_agent_config("test-agent").await.unwrap();
+    }
+
     let monitor = HealthMonitor::new(db, config_manager, output_dir, "0.7.6".to_string()).unwrap();
 
     // For a 5-minute (300s) period:

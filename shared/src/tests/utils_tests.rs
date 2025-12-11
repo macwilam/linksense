@@ -1,8 +1,10 @@
 //! Tests for utility functions
 
-use crate::utils::{
-    calculate_backoff_delay, calculate_checksum, decode_base64, encode_base64, format_duration,
-    sanitize_file_path, truncate_string, validate_agent_id, validate_url,
+use crate::utils::{calculate_checksum, encode_base64, validate_agent_id, validate_url};
+
+use super::test_utils::{
+    calculate_backoff_delay, current_timestamp, decode_base64, format_duration, sanitize_file_path,
+    truncate_string,
 };
 
 #[test]
@@ -117,8 +119,6 @@ fn test_truncate_string() {
 
 #[test]
 fn test_current_timestamp() {
-    use crate::utils::current_timestamp;
-
     let ts1 = current_timestamp();
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let ts2 = current_timestamp();

@@ -96,6 +96,10 @@ pub struct Server {
     health_monitor_task_handle: Option<JoinHandle<()>>,
     /// Handle to the rate limiter cleanup task for graceful shutdown.
     rate_limiter_cleanup_task_handle: Option<JoinHandle<()>>,
+    /// Handle to the config cache updater task for graceful shutdown.
+    config_cache_updater_handle: Option<JoinHandle<()>>,
+    /// File watcher for agent config changes (kept alive to maintain watching).
+    config_watcher: Option<notify::RecommendedWatcher>,
     /// Shutdown signal sender for notifying background tasks.
     shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 }
@@ -144,6 +148,8 @@ impl Server {
             wal_checkpoint_task_handle: None,
             health_monitor_task_handle: None,
             rate_limiter_cleanup_task_handle: None,
+            config_cache_updater_handle: None,
+            config_watcher: None,
             shutdown_tx: None,
         })
     }
@@ -189,6 +195,35 @@ impl Server {
             server_config.bandwidth_queue_position_multiplier_seconds,
         );
         info!("Bandwidth test manager initialized");
+
+        // Load all agent configurations into cache
+        let agent_configs_dir = PathBuf::from(&server_config.agent_configs_dir);
+        {
+            let config_manager = self.config_manager.lock().await;
+            match config_manager.load_all_agent_configs().await {
+                Ok(count) => {
+                    info!(count = count, "Agent configurations loaded into cache");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to load agent configurations into cache");
+                }
+            }
+        }
+
+        // Start file watcher for agent config changes
+        let (config_watcher, config_rx) = config::start_config_watcher(agent_configs_dir.clone())
+            .context("Failed to start config file watcher")?;
+        self.config_watcher = Some(config_watcher);
+
+        // Spawn cache updater task
+        let config_cache = {
+            let config_manager = self.config_manager.lock().await;
+            config_manager.config_cache.clone()
+        };
+        let cache_updater_handle =
+            config::spawn_cache_updater(config_cache, agent_configs_dir, config_rx);
+        self.config_cache_updater_handle = Some(cache_updater_handle);
+        info!("Config cache and file watcher initialized");
 
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
@@ -548,6 +583,17 @@ impl Server {
                     warn!("Health monitor task shutdown timeout reached, aborting");
                 }
             }
+        }
+
+        // Abort config cache updater task (it will stop when the watcher is dropped)
+        if let Some(handle) = self.config_cache_updater_handle.take() {
+            handle.abort();
+            info!("Config cache updater task aborted");
+        }
+
+        // Drop the config watcher to stop file monitoring
+        if self.config_watcher.take().is_some() {
+            info!("Config file watcher stopped");
         }
 
         // Close database connection

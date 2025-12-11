@@ -91,6 +91,8 @@ reconfigure_check_interval_seconds = 10
     // Create config manager for testing
     let config_manager =
         crate::config::ConfigManager::new(config_file.path().to_path_buf()).unwrap();
+    // Load agent configs into cache
+    config_manager.load_all_agent_configs().await.unwrap();
     let config_manager = Arc::new(tokio::sync::Mutex::new(config_manager));
 
     // Create bandwidth manager for testing
@@ -512,6 +514,8 @@ reconfigure_check_interval_seconds = 10
 
     let config_manager =
         crate::config::ConfigManager::new(config_file.path().to_path_buf()).unwrap();
+    // Load agent configs into cache
+    config_manager.load_all_agent_configs().await.unwrap();
     let config_manager = Arc::new(tokio::sync::Mutex::new(config_manager));
 
     let bandwidth_manager = crate::bandwidth_state::BandwidthTestManager::new(120, 300, 30, 60, 30);

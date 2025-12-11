@@ -286,12 +286,19 @@ impl HealthMonitor {
         // Agents aggregate metrics every 60 seconds
         const AGGREGATION_WINDOW_SECONDS: u64 = 60;
 
-        let config_manager = self.config_manager.lock().await;
-
-        // Get agent's tasks configuration
-        let tasks_toml = config_manager
-            .get_agent_tasks_config(agent_id)
-            .context("Failed to get agent tasks configuration")?;
+        // Get agent's tasks configuration (from cache or disk)
+        let tasks_toml = {
+            let config_manager = self.config_manager.lock().await;
+            match config_manager.get_agent_config(agent_id).await {
+                Ok(cached) => cached.content,
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "Agent {} configuration not found",
+                        agent_id
+                    ));
+                }
+            }
+        };
 
         // Parse tasks configuration
         let tasks_config: shared::config::TasksConfig =

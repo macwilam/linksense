@@ -1,15 +1,35 @@
 //! Configuration management for the network monitoring central server
 //!
 //! This module handles loading, validation, and management of server configuration
-//! from a `server.toml` file.
+//! from a `server.toml` file. It also provides an in-memory cache for agent
+//! configurations to avoid blocking I/O on every request.
 
 use anyhow::{Context, Result};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use shared::config::ServerConfig;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::{debug, info};
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, error, info, warn};
 
 /// The expected name of the configuration file.
 const SERVER_CONFIG_FILE: &str = "server.toml";
+
+/// Cached agent configuration with pre-computed hash and compressed form.
+#[derive(Clone, Debug)]
+pub struct CachedAgentConfig {
+    /// Raw content of the tasks.toml file
+    pub content: String,
+    /// BLAKE3 hash of the content (hex-encoded)
+    pub hash: String,
+    /// Gzipped and base64-encoded content
+    pub compressed: String,
+}
+
+/// Thread-safe cache for agent configurations.
+/// Uses RwLock to allow concurrent reads with exclusive writes.
+pub type AgentConfigCache = Arc<RwLock<HashMap<String, CachedAgentConfig>>>;
 
 /// Manages the server's configuration.
 /// This struct is responsible for the entire lifecycle of the server's
@@ -21,6 +41,9 @@ pub struct ConfigManager {
     /// to represent the unloaded state, although the constructor ensures it's
     /// always `Some` on success.
     pub server_config: Option<ServerConfig>,
+    /// In-memory cache of agent configurations (content, hash, compressed).
+    /// This cache is populated on startup and updated via file watcher.
+    pub config_cache: AgentConfigCache,
 }
 
 impl ConfigManager {
@@ -47,6 +70,7 @@ impl ConfigManager {
         let mut manager = Self {
             config_path,
             server_config: None,
+            config_cache: Arc::new(RwLock::new(HashMap::new())),
         };
 
         // The configuration is loaded as part of the creation process.
@@ -262,12 +286,71 @@ impl ConfigManager {
         }
     }
 
-    /// Get tasks.toml content for a specific agent
-    pub fn get_agent_tasks_config(&self, agent_id: &str) -> Result<String> {
+    /// Get the path to the agent configs directory.
+    pub fn get_agent_configs_dir(&self) -> PathBuf {
         let config = self.server_config.as_ref().expect(
             "Server configuration not loaded. This should not happen as config is loaded in new().",
         );
-        let configs_dir = std::path::Path::new(&config.agent_configs_dir);
+        PathBuf::from(&config.agent_configs_dir)
+    }
+
+    /// Load all agent configurations into the cache.
+    /// This should be called once at startup after the config manager is created.
+    pub async fn load_all_agent_configs(&self) -> Result<usize> {
+        let configs_dir = self.get_agent_configs_dir();
+
+        if !configs_dir.exists() {
+            debug!("Agent configs directory does not exist yet, skipping initial cache load");
+            return Ok(0);
+        }
+
+        let mut count = 0;
+        let entries = std::fs::read_dir(&configs_dir).with_context(|| {
+            format!("Failed to read agent configs directory: {:?}", configs_dir)
+        })?;
+
+        let mut cache = self.config_cache.write().await;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "toml") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let agent_id = stem.to_string();
+                    match load_and_cache_config(&path) {
+                        Ok(cached) => {
+                            debug!(agent_id = %agent_id, "Loaded agent config into cache");
+                            cache.insert(agent_id, cached);
+                            count += 1;
+                        }
+                        Err(e) => {
+                            warn!(
+                                agent_id = %agent_id,
+                                error = %e,
+                                "Failed to load agent config into cache"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        info!(count = count, "Agent configurations loaded into cache");
+        Ok(count)
+    }
+
+    /// Get agent config from cache, loading from disk if not cached.
+    /// Returns the full CachedAgentConfig with content, hash, and compressed fields.
+    pub async fn get_agent_config(&self, agent_id: &str) -> Result<CachedAgentConfig> {
+        // Check cache first
+        {
+            let cache = self.config_cache.read().await;
+            if let Some(cached) = cache.get(agent_id) {
+                return Ok(cached.clone());
+            }
+        }
+
+        // Cache miss - load from disk
+        let configs_dir = self.get_agent_configs_dir();
         let tasks_path = configs_dir.join(format!("{}.toml", agent_id));
 
         if !tasks_path.exists() {
@@ -278,35 +361,42 @@ impl ConfigManager {
             ));
         }
 
-        std::fs::read_to_string(&tasks_path)
-            .with_context(|| format!("Failed to read {}.toml for agent {}", agent_id, agent_id))
+        let cached = load_and_cache_config(&tasks_path)
+            .with_context(|| format!("Failed to load config for agent {}", agent_id))?;
+
+        // Store in cache
+        let mut cache = self.config_cache.write().await;
+        cache.insert(agent_id.to_string(), cached.clone());
+
+        Ok(cached)
     }
 
-    /// Calculate BLAKE3 hash of agent's tasks.toml config
-    pub fn get_agent_tasks_config_hash(&self, agent_id: &str) -> Result<String> {
-        let tasks_content = self.get_agent_tasks_config(agent_id)?;
-        let hash = blake3::hash(tasks_content.as_bytes());
-        Ok(hash.to_hex().to_string())
+    /// Invalidate cache for a specific agent (e.g., after config update).
+    pub async fn invalidate_agent_cache(&self, agent_id: &str) {
+        let mut cache = self.config_cache.write().await;
+        cache.remove(agent_id);
+        debug!(agent_id = %agent_id, "Invalidated agent config cache");
     }
 
-    /// Get gzipped and base64-encoded tasks.toml for an agent
-    pub fn get_agent_tasks_config_compressed(&self, agent_id: &str) -> Result<String> {
-        let tasks_content = self.get_agent_tasks_config(agent_id)?;
+    /// Reload a specific agent's config into cache.
+    pub async fn reload_agent_config(&self, agent_id: &str) -> Result<()> {
+        let configs_dir = self.get_agent_configs_dir();
+        let tasks_path = configs_dir.join(format!("{}.toml", agent_id));
 
-        // Compress with gzip
-        use std::io::Write;
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder
-            .write_all(tasks_content.as_bytes())
-            .context("Failed to compress tasks config")?;
-        let compressed_data = encoder
-            .finish()
-            .context("Failed to finish gzip compression")?;
+        if !tasks_path.exists() {
+            // File was deleted, remove from cache
+            self.invalidate_agent_cache(agent_id).await;
+            return Ok(());
+        }
 
-        // Encode as base64
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&compressed_data);
-        Ok(encoded)
+        let cached = load_and_cache_config(&tasks_path)
+            .with_context(|| format!("Failed to reload config for agent {}", agent_id))?;
+
+        let mut cache = self.config_cache.write().await;
+        cache.insert(agent_id.to_string(), cached);
+        debug!(agent_id = %agent_id, "Reloaded agent config into cache");
+
+        Ok(())
     }
 
     /// Override server configuration values and persist to disk
@@ -418,4 +508,112 @@ impl ConfigManager {
 
         Ok(config_changed)
     }
+}
+
+/// Load a config file and compute its hash and compressed form.
+fn load_and_cache_config(path: &std::path::Path) -> Result<CachedAgentConfig> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file: {:?}", path))?;
+
+    let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+
+    // Compress with gzip
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(content.as_bytes())
+        .context("Failed to compress config")?;
+    let compressed_data = encoder
+        .finish()
+        .context("Failed to finish gzip compression")?;
+
+    // Encode as base64
+    use base64::Engine;
+    let compressed = base64::engine::general_purpose::STANDARD.encode(&compressed_data);
+
+    Ok(CachedAgentConfig {
+        content,
+        hash,
+        compressed,
+    })
+}
+
+/// Start a file watcher for the agent configs directory.
+/// Returns a channel receiver that emits agent IDs when their configs change.
+pub fn start_config_watcher(
+    configs_dir: PathBuf,
+) -> Result<(RecommendedWatcher, mpsc::Receiver<String>)> {
+    let (tx, rx) = mpsc::channel::<String>(1000);
+
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<Event, notify::Error>| {
+            match res {
+                Ok(event) => {
+                    // We're interested in create, modify, and remove events
+                    use notify::EventKind;
+                    match event.kind {
+                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
+                            for path in event.paths {
+                                if path.extension().is_some_and(|ext| ext == "toml") {
+                                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                                        let agent_id = stem.to_string();
+                                        debug!(agent_id = %agent_id, event = ?event.kind, "Config file changed");
+                                        if let Err(e) = tx.blocking_send(agent_id) {
+                                            error!(
+                                                "Failed to send config change notification: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Err(e) => {
+                    error!("File watcher error: {}", e);
+                }
+            }
+        },
+        notify::Config::default(),
+    )?;
+
+    watcher.watch(&configs_dir, RecursiveMode::NonRecursive)?;
+
+    info!(path = %configs_dir.display(), "Started config file watcher");
+
+    Ok((watcher, rx))
+}
+
+/// Spawn a background task that listens for config changes and updates the cache.
+pub fn spawn_cache_updater(
+    config_cache: AgentConfigCache,
+    configs_dir: PathBuf,
+    mut rx: mpsc::Receiver<String>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(agent_id) = rx.recv().await {
+            let path = configs_dir.join(format!("{}.toml", agent_id));
+
+            if path.exists() {
+                // File created or modified - reload into cache
+                match load_and_cache_config(&path) {
+                    Ok(cached) => {
+                        let mut cache = config_cache.write().await;
+                        cache.insert(agent_id.clone(), cached);
+                        info!(agent_id = %agent_id, "Updated agent config in cache");
+                    }
+                    Err(e) => {
+                        warn!(agent_id = %agent_id, error = %e, "Failed to reload agent config");
+                    }
+                }
+            } else {
+                // File removed - remove from cache
+                let mut cache = config_cache.write().await;
+                cache.remove(&agent_id);
+                info!(agent_id = %agent_id, "Removed agent config from cache");
+            }
+        }
+    })
 }

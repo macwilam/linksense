@@ -424,9 +424,9 @@ async fn handle_metrics(
     // Compare config hash to detect if agent needs to update
     let config_status = {
         let config_manager = state.config_manager.lock().await;
-        match config_manager.get_agent_tasks_config_hash(&request.agent_id) {
-            Ok(server_hash) => {
-                if server_hash == request.config_checksum {
+        match config_manager.get_agent_config(&request.agent_id).await {
+            Ok(cached) => {
+                if cached.hash == request.config_checksum {
                     debug!(
                         agent_id = %request.agent_id,
                         "Agent config is up to date"
@@ -436,18 +436,17 @@ async fn handle_metrics(
                     info!(
                         agent_id = %request.agent_id,
                         agent_hash = %request.config_checksum,
-                        server_hash = %server_hash,
+                        server_hash = %cached.hash,
                         "Agent config is stale, needs update"
                     );
                     ConfigStatus::Stale
                 }
             }
-            Err(e) => {
+            Err(_) => {
                 // Server doesn't have a config for this agent
                 // Request that the agent upload its config
                 warn!(
                     agent_id = %request.agent_id,
-                    error = %e,
                     "Server has no config for agent, requesting agent to upload its configuration"
                 );
                 ConfigStatus::Stale
@@ -592,21 +591,19 @@ async fn handle_configs(
 
     info!(agent_id = %agent_id, "Agent requesting configuration");
 
-    // Get agent's tasks.toml configuration
+    // Get agent's tasks.toml configuration (from cache or disk)
     let tasks_toml_compressed = {
         let config_manager = state.config_manager.lock().await;
-
-        match config_manager.get_agent_tasks_config_compressed(agent_id) {
-            Ok(compressed) => compressed,
-            Err(e) => {
+        match config_manager.get_agent_config(agent_id).await {
+            Ok(cached) => cached.compressed,
+            Err(_) => {
                 warn!(
                     agent_id = %agent_id,
-                    error = %e,
                     "Agent configuration not found"
                 );
                 return Err(ApiError::BadRequest(format!(
-                    "Configuration not found for agent {}: {}",
-                    agent_id, e
+                    "Configuration not found for agent {}",
+                    agent_id
                 )));
             }
         }
@@ -720,19 +717,17 @@ async fn handle_config_verify(
         "Received config verification request from agent"
     );
 
-    // Get server's current config hash for this agent
-    let server_hash = {
+    // Get agent config (from cache or disk)
+    let cached_config = {
         let config_manager = state.config_manager.lock().await;
-        match config_manager.get_agent_tasks_config_hash(&request.agent_id) {
-            Ok(hash) => hash,
-            Err(e) => {
+        match config_manager.get_agent_config(&request.agent_id).await {
+            Ok(cached) => cached,
+            Err(_) => {
                 warn!(
                     agent_id = %request.agent_id,
-                    error = %e,
-                    "Failed to get server config hash for agent"
+                    "Server has no config for agent"
                 );
                 // If we can't get the config, tell the agent to update
-                // (this could mean the config file doesn't exist or is corrupt)
                 let response = ConfigVerifyResponse {
                     status: "error".to_string(),
                     config_status: shared::api::ConfigStatus::Stale,
@@ -744,10 +739,10 @@ async fn handle_config_verify(
     };
 
     // Compare agent's hash with server's hash
-    if request.tasks_config_hash == server_hash {
+    if request.tasks_config_hash == cached_config.hash {
         debug!(
             agent_id = %request.agent_id,
-            hash = %server_hash,
+            hash = %cached_config.hash,
             "Agent config is up to date"
         );
 
@@ -761,30 +756,14 @@ async fn handle_config_verify(
         info!(
             agent_id = %request.agent_id,
             agent_hash = %request.tasks_config_hash,
-            server_hash = %server_hash,
+            server_hash = %cached_config.hash,
             "Agent config is outdated, sending new config"
         );
-
-        // Get the new compressed config to send to the agent
-        let tasks_toml_compressed = {
-            let config_manager = state.config_manager.lock().await;
-            match config_manager.get_agent_tasks_config_compressed(&request.agent_id) {
-                Ok(compressed) => Some(compressed),
-                Err(e) => {
-                    error!(
-                        agent_id = %request.agent_id,
-                        error = %e,
-                        "Failed to get compressed config for agent"
-                    );
-                    None
-                }
-            }
-        };
 
         let response = ConfigVerifyResponse {
             status: "success".to_string(),
             config_status: shared::api::ConfigStatus::Stale,
-            tasks_toml: tasks_toml_compressed,
+            tasks_toml: Some(cached_config.compressed),
         };
         Ok(Json(response))
     }
