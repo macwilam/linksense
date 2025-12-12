@@ -182,37 +182,31 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-target-
 
+      # Build agent (features apply only to agent, not server)
       - name: Build agent (native)
         if: ${{ !matrix.use_cross && matrix.features == '' }}
         run: cargo build --release --target ${{ matrix.target }} --bin agent
-
-      - name: Build server (native)
-        if: ${{ !matrix.use_cross && matrix.features == '' }}
-        run: cargo build --release --target ${{ matrix.target }} --bin server
 
       - name: Build agent with features (native)
         if: ${{ !matrix.use_cross && matrix.features != '' }}
         run: cargo build --release --target ${{ matrix.target }} --bin agent --features "${{ matrix.features }}"
 
-      - name: Build server with features (native)
-        if: ${{ !matrix.use_cross && matrix.features != '' }}
-        run: cargo build --release --target ${{ matrix.target }} --bin server --features "${{ matrix.features }}"
-
       - name: Build agent (cross)
         if: ${{ matrix.use_cross && matrix.features == '' }}
         run: cross build --release --target ${{ matrix.target }} --bin agent
-
-      - name: Build server (cross)
-        if: ${{ matrix.use_cross && matrix.features == '' }}
-        run: cross build --release --target ${{ matrix.target }} --bin server
 
       - name: Build agent with features (cross)
         if: ${{ matrix.use_cross && matrix.features != '' }}
         run: cross build --release --target ${{ matrix.target }} --bin agent --features "${{ matrix.features }}"
 
-      - name: Build server with features (cross)
-        if: ${{ matrix.use_cross && matrix.features != '' }}
-        run: cross build --release --target ${{ matrix.target }} --bin server --features "${{ matrix.features }}"
+      # Build server (always without features - server supports all metric types unconditionally)
+      - name: Build server (native)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --target ${{ matrix.target }} --bin server
+
+      - name: Build server (cross)
+        if: ${{ matrix.use_cross }}
+        run: cross build --release --target ${{ matrix.target }} --bin server
 
       - name: Determine version
         id: version
@@ -412,12 +406,16 @@ jobs:
             ## Download Options
 
             ### Regular builds
-            Standard builds without SQL and SNMP monitoring features.
+            Agent without SQL and SNMP task execution features.
+            Server is identical in both variants (always accepts all metric types).
 
             ### Full builds
-            Includes all optional features:
+            Agent includes all optional features:
             - **SQL tasks**: Monitor PostgreSQL, MySQL, MariaDB databases
             - **SNMP tasks**: Query SNMP-enabled network devices (v1/v2c/v3)
+
+            Note: The server binary is the same in both variants - it can always receive
+            and store metrics from any agent, regardless of which features the agent has.
 
             ### Platforms
             | Platform | Architecture | Notes |

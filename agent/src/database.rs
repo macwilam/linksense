@@ -165,8 +165,13 @@ impl AgentDatabase {
             }
             #[cfg(feature = "sql-tasks")]
             RawMetricData::SqlQuery(sql_data) => db_sql::store_raw_metric(conn, metric, sql_data),
+            #[cfg(not(feature = "sql-tasks"))]
+            RawMetricData::SqlQuery(_) => Err(anyhow::anyhow!("SQL tasks feature not enabled")),
             #[cfg(feature = "snmp-tasks")]
             RawMetricData::Snmp(snmp_data) => db_snmp::store_raw_metric(conn, metric, snmp_data),
+            #[cfg(not(feature = "snmp-tasks"))]
+            RawMetricData::Snmp(_) => Err(anyhow::anyhow!("SNMP tasks feature not enabled")),
+            RawMetricData::Unknown => Err(anyhow::anyhow!("Unknown metric type cannot be stored")),
         }
     }
 
@@ -388,9 +393,20 @@ impl AgentDatabase {
             AggregatedMetricData::SqlQuery(sql_data) => {
                 db_sql::store_aggregated_metric(conn, metrics, sql_data)?
             }
+            #[cfg(not(feature = "sql-tasks"))]
+            AggregatedMetricData::SqlQuery(_) => {
+                return Err(anyhow::anyhow!("SQL tasks feature not enabled"));
+            }
             #[cfg(feature = "snmp-tasks")]
             AggregatedMetricData::Snmp(snmp_data) => {
                 db_snmp::store_aggregated_metric(conn, metrics, snmp_data)?
+            }
+            #[cfg(not(feature = "snmp-tasks"))]
+            AggregatedMetricData::Snmp(_) => {
+                return Err(anyhow::anyhow!("SNMP tasks feature not enabled"));
+            }
+            AggregatedMetricData::Unknown => {
+                return Err(anyhow::anyhow!("Unknown metric type cannot be stored"));
             }
         };
 
@@ -433,6 +449,12 @@ impl AgentDatabase {
     pub async fn cleanup_sent_queue_entries(&mut self, older_than_hours: i64) -> Result<usize> {
         let conn = self.get_connection()?;
         db_queue::cleanup_sent_queue_entries(conn, older_than_hours)
+    }
+
+    /// Clean up permanently failed queue entries older than specified days
+    pub async fn cleanup_failed_queue_entries(&mut self, older_than_days: i64) -> Result<usize> {
+        let conn = self.get_connection()?;
+        db_queue::cleanup_failed_queue_entries(conn, older_than_days)
     }
 
     /// Get queue statistics for monitoring

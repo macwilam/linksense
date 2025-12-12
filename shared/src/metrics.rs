@@ -61,6 +61,11 @@ pub struct AggregatedMetrics {
 }
 
 /// Raw measurement data from individual task executions
+///
+/// Note: All variants are always present regardless of feature flags to ensure
+/// compatibility between agents and servers compiled with different features.
+/// The structs for sql-tasks and snmp-tasks are only available when those
+/// features are enabled, but the enum variants exist for deserialization.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RawMetricData {
@@ -71,13 +76,18 @@ pub enum RawMetricData {
     TlsHandshake(RawTlsMetric),
     DnsQuery(RawDnsMetric),
     Bandwidth(RawBandwidthMetric),
-    #[cfg(feature = "sql-tasks")]
     SqlQuery(RawSqlQueryMetric),
-    #[cfg(feature = "snmp-tasks")]
     Snmp(RawSnmpMetric),
+    /// Unknown metric type - used for forward compatibility when receiving
+    /// metrics from agents with newer/different feature flags
+    #[serde(other)]
+    Unknown,
 }
 
 /// Aggregated measurement data over a time period
+///
+/// Note: All variants are always present regardless of feature flags to ensure
+/// compatibility between agents and servers compiled with different features.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AggregatedMetricData {
@@ -88,10 +98,12 @@ pub enum AggregatedMetricData {
     TlsHandshake(AggregatedTlsMetric),
     DnsQuery(AggregatedDnsMetric),
     Bandwidth(AggregatedBandwidthMetric),
-    #[cfg(feature = "sql-tasks")]
     SqlQuery(AggregatedSqlQueryMetric),
-    #[cfg(feature = "snmp-tasks")]
     Snmp(AggregatedSnmpMetric),
+    /// Unknown metric type - used for forward compatibility when receiving
+    /// metrics from agents with newer/different feature flags
+    #[serde(other)]
+    Unknown,
 }
 
 /// Raw ping measurement data
@@ -406,7 +418,6 @@ pub struct AggregatedBandwidthMetric {
 }
 
 /// Raw SQL query measurement data
-#[cfg(feature = "sql-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RawSqlQueryMetric {
     /// Total query execution time in milliseconds
@@ -437,7 +448,6 @@ pub struct RawSqlQueryMetric {
 }
 
 /// Aggregated SQL query metrics over a time period
-#[cfg(feature = "sql-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AggregatedSqlQueryMetric {
     /// Success rate as a percentage (0.0 to 100.0)
@@ -472,7 +482,6 @@ pub struct AggregatedSqlQueryMetric {
 }
 
 /// Raw SNMP query measurement data
-#[cfg(feature = "snmp-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RawSnmpMetric {
     /// Query response time in milliseconds
@@ -494,7 +503,6 @@ pub struct RawSnmpMetric {
 
 /// Aggregated SNMP metrics over a time period
 /// Note: Since SNMP tasks run at minimum 60s intervals, aggregation typically contains 1 sample
-#[cfg(feature = "snmp-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AggregatedSnmpMetric {
     /// Success rate as a percentage (0.0 to 100.0)
@@ -537,10 +545,9 @@ impl MetricData {
             RawMetricData::HttpContent(metric) => metric.success,
             RawMetricData::DnsQuery(metric) => metric.success,
             RawMetricData::Bandwidth(metric) => metric.success,
-            #[cfg(feature = "sql-tasks")]
             RawMetricData::SqlQuery(metric) => metric.success,
-            #[cfg(feature = "snmp-tasks")]
             RawMetricData::Snmp(metric) => metric.success,
+            RawMetricData::Unknown => false,
         }
     }
 }

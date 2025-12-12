@@ -717,11 +717,12 @@ impl TaskScheduler {
         self.state == SchedulerState::Running
     }
 
-    /// Cleans up old sent queue entries if enough time has passed.
+    /// Cleans up old queue entries if enough time has passed.
     ///
     /// Checks if the configured cleanup interval has elapsed since the last cleanup.
-    /// If so, removes queue entries that have been successfully sent and are older
-    /// than 24 hours.
+    /// If so, removes:
+    /// - Queue entries that have been successfully sent and are older than 24 hours
+    /// - Queue entries that permanently failed and are older than 7 days
     ///
     /// # Returns
     /// `Ok(())` on success or if no cleanup needed, database error otherwise
@@ -733,12 +734,18 @@ impl TaskScheduler {
             debug!("Performing queue cleanup");
 
             let mut db = self.database.write().await;
+
+            // Clean up successfully sent entries older than 24 hours
             if let Err(e) = db.cleanup_sent_queue_entries(24).await {
                 warn!("Failed to cleanup sent queue entries: {}", e);
-            } else {
-                debug!("Cleaned up old sent queue entries");
             }
 
+            // Clean up permanently failed entries older than 7 days
+            if let Err(e) = db.cleanup_failed_queue_entries(7).await {
+                warn!("Failed to cleanup failed queue entries: {}", e);
+            }
+
+            debug!("Queue cleanup completed");
             self.last_queue_cleanup = current_time;
         }
 

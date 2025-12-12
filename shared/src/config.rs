@@ -457,7 +457,6 @@ pub struct BandwidthParams {
 }
 
 /// SQL query execution mode
-#[cfg(feature = "sql-tasks")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SqlQueryMode {
@@ -468,7 +467,6 @@ pub enum SqlQueryMode {
     Json,
 }
 
-#[cfg(feature = "sql-tasks")]
 impl SqlQueryMode {
     /// Returns the mode as a string slice for database storage
     pub fn as_str(&self) -> &'static str {

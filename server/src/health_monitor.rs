@@ -78,11 +78,26 @@ impl HealthMonitor {
         let check_period_seconds = config.health_check_interval_seconds;
         let threshold = config.health_check_success_ratio_threshold;
 
-        // Exclude the current incomplete minute (agents aggregate every 60 seconds)
-        // The most recent minute hasn't been aggregated and sent yet
+        // Agents aggregate metrics at minute boundaries (e.g., period_start = 720, 780, 840...)
+        // We must align our query period to minute boundaries to match.
+        //
+        // We exclude TWO minutes from the end:
+        // 1. The current incomplete minute (not yet aggregated by agents)
+        // 2. The previous minute (aggregated but may not be sent/received yet due to network delay)
+        //
+        // Example at real time 1065:
+        //   current_minute = 1020 (floor to minute)
+        //   period_end = 1020 - 60 = 960 (exclude current + transmission buffer)
+        //   period_start = 960 - 300 = 660 (for 5-minute check interval)
+        //   Query matches entries with period_start: 660, 720, 780, 840, 900 (5 entries)
         const AGGREGATION_WINDOW_SECONDS: u64 = 60;
-        let current_time = current_timestamp() - AGGREGATION_WINDOW_SECONDS;
-        let period_start = current_time - check_period_seconds;
+        let now = current_timestamp();
+        let current_minute = (now / AGGREGATION_WINDOW_SECONDS) * AGGREGATION_WINDOW_SECONDS;
+        let period_end = current_minute - AGGREGATION_WINDOW_SECONDS; // Exclude current + buffer minute
+        let period_start = period_end - check_period_seconds;
+
+        // Use period_end as the effective "current_time" for calculations
+        let current_time = period_end;
 
         // Get all registered agents
         let agents = {
@@ -409,14 +424,17 @@ impl HealthMonitor {
             |row| row.get(0),
         )?;
 
-        #[cfg(feature = "sql-tasks")]
         let count_sql: i64 = tx.query_row(
             "SELECT COUNT(*) FROM agg_metric_sql_query WHERE agent_id = ?1 AND period_start >= ?2 AND period_start < ?3",
             rusqlite::params![agent_id, period_start_i64, period_end_i64],
             |row| row.get(0),
         )?;
-        #[cfg(not(feature = "sql-tasks"))]
-        let count_sql: i64 = 0;
+
+        let count_snmp: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM agg_metric_snmp WHERE agent_id = ?1 AND period_start >= ?2 AND period_start < ?3",
+            rusqlite::params![agent_id, period_start_i64, period_end_i64],
+            |row| row.get(0),
+        )?;
 
         // Commit the read transaction (this is a no-op for reads but releases locks)
         tx.commit()?;
@@ -428,11 +446,12 @@ impl HealthMonitor {
             + count_http_content
             + count_dns
             + count_bandwidth
-            + count_sql;
+            + count_sql
+            + count_snmp;
 
         debug!(
-            "Agent {}: received entries = {} (ping={}, tcp={}, http={}, tls={}, http_content={}, dns={}, bandwidth={}, sql={})",
-            agent_id, total, count_ping, count_tcp, count_http, count_tls, count_http_content, count_dns, count_bandwidth, count_sql
+            "Agent {}: received entries = {} (ping={}, tcp={}, http={}, tls={}, http_content={}, dns={}, bandwidth={}, sql={}, snmp={})",
+            agent_id, total, count_ping, count_tcp, count_http, count_tls, count_http_content, count_dns, count_bandwidth, count_sql, count_snmp
         );
 
         Ok(total)

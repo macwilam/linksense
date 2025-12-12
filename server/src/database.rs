@@ -9,15 +9,15 @@
 // powerful database like PostgreSQL.
 
 // Task-specific database modules
+// Note: All metric types are always enabled on the server to ensure it can
+// receive metrics from agents compiled with any combination of features.
 pub mod db_agent_health;
 mod db_bandwidth;
 mod db_dns;
 mod db_http;
 mod db_http_content;
 mod db_ping;
-#[cfg(feature = "snmp-tasks")]
 mod db_snmp;
-#[cfg(feature = "sql-tasks")]
 mod db_sql;
 mod db_tcp;
 mod db_tls;
@@ -96,9 +96,7 @@ impl ServerDatabase {
         db_http_content::create_table(conn)?;
         db_dns::create_table(conn)?;
         db_bandwidth::create_table(conn)?;
-        #[cfg(feature = "sql-tasks")]
         db_sql::create_table(conn)?;
-        #[cfg(feature = "snmp-tasks")]
         db_snmp::create_table(conn)?;
 
         // Create agent health checks table
@@ -254,13 +252,17 @@ impl ServerDatabase {
                 AggregatedMetricData::Bandwidth(bandwidth_data) => {
                     db_bandwidth::store_metric(&tx, agent_id, metric, bandwidth_data)?;
                 }
-                #[cfg(feature = "sql-tasks")]
                 AggregatedMetricData::SqlQuery(sql_data) => {
                     db_sql::store_metric(&tx, agent_id, metric, sql_data)?;
                 }
-                #[cfg(feature = "snmp-tasks")]
                 AggregatedMetricData::Snmp(snmp_data) => {
                     db_snmp::store_metric(&tx, agent_id, metric, snmp_data)?;
+                }
+                AggregatedMetricData::Unknown => {
+                    warn!(
+                        "Received unknown metric type from agent {}, skipping",
+                        agent_id
+                    );
                 }
             }
         }
@@ -397,15 +399,8 @@ impl ServerDatabase {
         let agg_dns_deleted = db_dns::cleanup_old_data(conn, cutoff_time as i64)?;
         let agg_bandwidth_deleted = db_bandwidth::cleanup_old_data(conn, cutoff_time as i64)?;
 
-        #[cfg(feature = "sql-tasks")]
         let agg_sql_query_deleted = db_sql::cleanup_old_data(conn, cutoff_time as i64)?;
-        #[cfg(not(feature = "sql-tasks"))]
-        let agg_sql_query_deleted = 0;
-
-        #[cfg(feature = "snmp-tasks")]
         let agg_snmp_deleted = db_snmp::cleanup_old_data(conn, cutoff_time as i64)?;
-        #[cfg(not(feature = "snmp-tasks"))]
-        let agg_snmp_deleted = 0;
 
         let total_metrics_deleted = agg_ping_deleted
             + agg_tcp_deleted
@@ -521,19 +516,12 @@ impl ServerDatabase {
                 row.get(0)
             })?;
 
-        #[cfg(feature = "sql-tasks")]
         let agg_sql_query_count: i64 =
             tx.query_row("SELECT COUNT(*) FROM agg_metric_sql_query", [], |row| {
                 row.get(0)
             })?;
-        #[cfg(not(feature = "sql-tasks"))]
-        let agg_sql_query_count: i64 = 0;
-
-        #[cfg(feature = "snmp-tasks")]
         let agg_snmp_count: i64 =
             tx.query_row("SELECT COUNT(*) FROM agg_metric_snmp", [], |row| row.get(0))?;
-        #[cfg(not(feature = "snmp-tasks"))]
-        let agg_snmp_count: i64 = 0;
 
         let total_metrics = agg_ping_count
             + agg_tcp_count

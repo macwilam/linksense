@@ -2,14 +2,14 @@
 //!
 //! This module handles all database operations specific to SQL query monitoring
 //! on the server side, including table creation, metric storage, and cleanup.
-//! This module is feature-gated and only compiled when sql-tasks feature is enabled.
+//! Note: This module is always compiled on the server to accept metrics from
+//! agents that have the sql-tasks feature enabled.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, Transaction};
 use shared::metrics::{AggregatedMetrics, AggregatedSqlQueryMetric};
 
 /// Create SQL query aggregated metrics table
-#[cfg(feature = "sql-tasks")]
 pub(super) fn create_table(conn: &Connection) -> Result<()> {
     conn.execute(
         r#"
@@ -73,7 +73,6 @@ pub(super) fn create_table(conn: &Connection) -> Result<()> {
 }
 
 /// Store aggregated SQL query metric within a transaction
-#[cfg(feature = "sql-tasks")]
 pub(super) fn store_metric(
     tx: &Transaction,
     agent_id: &str,
@@ -112,7 +111,6 @@ pub(super) fn store_metric(
 }
 
 /// Delete old SQL query metrics
-#[cfg(feature = "sql-tasks")]
 pub(super) fn cleanup_old_data(conn: &Connection, cutoff_time: i64) -> Result<usize> {
     let deleted = conn.execute(
         "DELETE FROM agg_metric_sql_query WHERE period_end < ?1",

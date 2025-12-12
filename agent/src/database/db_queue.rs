@@ -125,8 +125,42 @@ pub fn create_queue_table(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // Recover any metrics stuck in 'sending' state from a previous crash
+    let recovered = recover_sending_entries(conn)?;
+    if recovered > 0 {
+        info!(
+            "Recovered {} metrics stuck in 'sending' state from previous run",
+            recovered
+        );
+    }
+
     info!("Metric send queue table created");
     Ok(())
+}
+
+/// Recover metrics stuck in 'sending' state from a previous crash.
+///
+/// When the agent crashes or is killed while sending metrics, those entries
+/// remain in 'sending' state and would never be retried. This function resets
+/// them to 'pending' so they can be sent on the next attempt.
+///
+/// This should be called during database initialization (startup).
+pub fn recover_sending_entries(conn: &Connection) -> Result<usize> {
+    let now = current_timestamp();
+
+    let count = conn.execute(
+        r#"
+        UPDATE metric_send_queue
+        SET status = 'pending',
+            next_retry_at = ?1,
+            retry_count = retry_count + 1,
+            last_error = 'Recovered after agent restart (was stuck in sending state)'
+        WHERE status = 'sending'
+        "#,
+        params![now as i64],
+    )?;
+
+    Ok(count)
 }
 
 /// Queue an aggregated metric for sending to the server
@@ -145,10 +179,11 @@ pub fn enqueue_metric_for_send(
         AggregatedMetricData::HttpContent(_) => "http_content",
         AggregatedMetricData::DnsQuery(_) => "dns",
         AggregatedMetricData::Bandwidth(_) => "bandwidth",
-        #[cfg(feature = "snmp-tasks")]
         AggregatedMetricData::Snmp(_) => "snmp",
-        #[cfg(feature = "sql-tasks")]
         AggregatedMetricData::SqlQuery(_) => "sql_query",
+        AggregatedMetricData::Unknown => {
+            return Err(anyhow::anyhow!("Cannot enqueue unknown metric type"));
+        }
     };
 
     // Use INSERT OR IGNORE to prevent duplicate queue entries
@@ -352,6 +387,37 @@ pub fn cleanup_sent_queue_entries(conn: &Connection, older_than_hours: i64) -> R
 
     if count > 0 {
         debug!("Cleaned up {} sent queue entries", count);
+    }
+
+    Ok(count)
+}
+
+/// Clean up permanently failed queue entries older than specified days.
+///
+/// Failed entries (those that exceeded max_retries) are kept for a period
+/// to allow investigation, but should eventually be cleaned up to prevent
+/// unbounded queue growth when the server is unreachable for extended periods.
+///
+/// # Parameters
+/// * `conn` - Database connection
+/// * `older_than_days` - Remove failed entries older than this many days
+///
+/// # Returns
+/// Number of entries removed
+pub fn cleanup_failed_queue_entries(conn: &Connection, older_than_days: i64) -> Result<usize> {
+    let cutoff = current_timestamp() - (older_than_days as u64 * 24 * 3600);
+
+    let count = conn.execute(
+        "DELETE FROM metric_send_queue
+         WHERE status = 'failed' AND last_retry_at < ?1",
+        params![cutoff as i64],
+    )?;
+
+    if count > 0 {
+        info!(
+            "Cleaned up {} permanently failed queue entries older than {} days",
+            count, older_than_days
+        );
     }
 
     Ok(count)
