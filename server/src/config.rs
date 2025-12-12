@@ -540,9 +540,21 @@ fn load_and_cache_config(path: &std::path::Path) -> Result<CachedAgentConfig> {
 
 /// Start a file watcher for the agent configs directory.
 /// Returns a channel receiver that emits agent IDs when their configs change.
+/// Creates the directory if it doesn't exist.
 pub fn start_config_watcher(
     configs_dir: PathBuf,
 ) -> Result<(RecommendedWatcher, mpsc::Receiver<String>)> {
+    // Ensure the configs directory exists before setting up the watcher
+    if !configs_dir.exists() {
+        std::fs::create_dir_all(&configs_dir).with_context(|| {
+            format!(
+                "Failed to create agent configs directory: {}",
+                configs_dir.display()
+            )
+        })?;
+        info!("Created agent configs directory: {}", configs_dir.display());
+    }
+
     let (tx, rx) = mpsc::channel::<String>(1000);
 
     let mut watcher = RecommendedWatcher::new(
