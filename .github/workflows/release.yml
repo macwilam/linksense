@@ -145,17 +145,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install OpenSSL (Ubuntu native builds with SNMP)
-        if: runner.os == 'Linux' && !matrix.use_cross && matrix.variant == 'full'
+      - name: Install build dependencies for vendored OpenSSL (Linux)
+        if: runner.os == 'Linux' && matrix.variant == 'full'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
+          sudo apt-get install -y perl make pkg-config
 
-      - name: Install cross-compilation dependencies
-        if: matrix.use_cross && matrix.variant == 'full'
+      - name: Install build dependencies for vendored OpenSSL (macOS)
+        if: runner.os == 'macOS' && matrix.variant == 'full'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y perl make
+          # macOS has perl and make by default, but ensure they're available
+          which perl && which make
 
       - name: Install cross (for cross-compilation)
         if: matrix.use_cross
@@ -167,17 +167,17 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-cargo-
+            ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-cargo-v2-
 
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-target-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-target-
+            ${{ runner.os }}-${{ matrix.target }}-${{ matrix.variant }}-target-v2-
 
       # Build agent (features apply only to agent, not server)
       - name: Build agent (native)
