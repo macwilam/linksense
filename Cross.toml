@@ -9,7 +9,7 @@
 passthrough = [
     "RUST_BACKTRACE",
     "RUST_LOG",
+    # Force vendored OpenSSL compilation by disabling pkg-config lookup
+    # This ensures openssl-sys uses the vendored feature to compile from source
+    "OPENSSL_NO_PKG_CONFIG=1",
 ]
-
-# All targets use the default cross-rs images which include the necessary
-# build tools (C compiler, perl, make) for compiling vendored OpenSSL

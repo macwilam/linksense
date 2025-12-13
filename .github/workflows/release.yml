@@ -187,6 +187,9 @@ jobs:
       - name: Build agent with features (native)
         if: ${{ !matrix.use_cross && matrix.features != '' }}
         run: cargo build --release --target ${{ matrix.target }} --bin agent --features "${{ matrix.features }}"
+        env:
+          # Force vendored OpenSSL to compile from source instead of using pkg-config
+          OPENSSL_NO_PKG_CONFIG: "1"
 
       - name: Build agent (cross)
         if: ${{ matrix.use_cross && matrix.features == '' }}
@@ -195,6 +198,9 @@ jobs:
       - name: Build agent with features (cross)
         if: ${{ matrix.use_cross && matrix.features != '' }}
         run: cross build --release --target ${{ matrix.target }} --bin agent --features "${{ matrix.features }}"
+        env:
+          # Force vendored OpenSSL - this is passed to cross container via Cross.toml
+          OPENSSL_NO_PKG_CONFIG: "1"
 
       # Build server (always without features - server supports all metric types unconditionally)
       - name: Build server (native)
