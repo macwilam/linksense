@@ -2,14 +2,11 @@
 # This file configures the `cross` tool for building on different target platforms
 #
 # The openssl crate is configured with the "vendored" feature, which compiles
-# OpenSSL from source during the build. This requires perl and a C compiler,
-# which are available in the default cross-rs images.
+# OpenSSL from source during the build. The default cross-rs images include
+# the necessary build tools (C compiler, perl, make).
 
 [build.env]
 passthrough = [
     "RUST_BACKTRACE",
     "RUST_LOG",
 ]
-
-# All targets use the default cross-rs images which include the necessary
-# build tools (C compiler, perl, make) for compiling vendored OpenSSL

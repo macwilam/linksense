@@ -187,6 +187,9 @@ jobs:
       - name: Build agent with features (native)
         if: ${{ !matrix.use_cross && matrix.features != '' }}
         run: cargo build --release --target ${{ matrix.target }} --bin agent --features "${{ matrix.features }}"
+        env:
+          # Use system OpenSSL instead of vendored build (faster, simpler)
+          OPENSSL_NO_VENDOR: "1"
 
       - name: Build agent (cross)
         if: ${{ matrix.use_cross && matrix.features == '' }}
