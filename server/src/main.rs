@@ -9,7 +9,8 @@
 // - Starting the web server and API endpoints.
 // - Handling graceful shutdown.
 
-// Use jemalloc as the global allocator for better performance
+// Use jemalloc as the global allocator for better performance (not available on Windows)
+#[cfg(not(target_os = "windows"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

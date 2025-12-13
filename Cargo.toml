@@ -39,6 +39,7 @@ socket2 = "0.6.0"
 url = "2.5.7"
 hickory-client = "0.25.2"
 snmp2 = { version = "0.4", features = ["tokio", "v3"] }
+openssl = { version = "0.10", features = ["vendored"] }
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 tokio-rustls = "0.26"
 rustls-native-certs = "0.8"

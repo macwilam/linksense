@@ -35,7 +35,6 @@ tracing-appender.workspace = true
 base64.workspace = true
 flate2.workspace = true
 chrono.workspace = true
-tikv-jemallocator.workspace = true
 
 # Server-specific dependencies
 axum.workspace = true
@@ -44,6 +43,10 @@ clap.workspace = true
 subtle.workspace = true
 futures-util.workspace = true
 notify.workspace = true
+
+# Platform-specific dependencies
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+tikv-jemallocator.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

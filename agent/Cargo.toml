@@ -14,7 +14,7 @@ path = "src/main.rs"
 [features]
 default = []
 sql-tasks = ["dep:rsql_drivers", "dep:rsql_driver", "shared/sql-tasks"]
-snmp-tasks = ["dep:snmp2", "shared/snmp-tasks"]
+snmp-tasks = ["dep:snmp2", "dep:openssl", "shared/snmp-tasks"]
 
 [dependencies]
 # Shared crate
@@ -36,7 +36,6 @@ tracing-appender.workspace = true
 base64.workspace = true
 flate2.workspace = true
 chrono.workspace = true
-tikv-jemallocator.workspace = true
 
 # Agent-specific dependencies
 reqwest.workspace = true
@@ -45,6 +44,7 @@ socket2.workspace = true
 url.workspace = true
 hickory-client.workspace = true
 snmp2 = { version = "0.4", features = ["tokio", "v3"], optional = true }
+openssl = { workspace = true, optional = true }
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-native-certs.workspace = true
@@ -61,7 +61,9 @@ futures-util.workspace = true
 rsql_drivers = { workspace = true, optional = true }
 rsql_driver = { workspace = true, optional = true }
 
-
+# Platform-specific dependencies
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+tikv-jemallocator.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
