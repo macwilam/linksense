@@ -9,7 +9,7 @@ A high-performance, async Rust-based distributed network monitoring solution des
 **RELEASE CANDIDATE VERSION:** LinkSense is currently in RC. The software is feature-complete and fully functional. It has undergone long run testing. All agent and server tasks are being actively tested. Note: The SQL and SNMP task features are in beta stage and require the `sql-tasks` and `snmp-tasks` feature flags respectively. 
 
 **LinkSense was created as an open-source project by the Sycope team.**
-If you’d like to learn more about Sycope and our approach to network monitoring and security, visit 👉 [Sycope](https://www.sycope.com/)
+If you’d like to learn more about Sycope and our approach to network monitoring and security, visit 👉 [Sycope](https://www.sycope.com/?utm_source=linksense&utm_medium=github&utm_campaign=linksense-OS)
 
 ## 🎯 What is LinkSense?
 
