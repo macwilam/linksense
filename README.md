@@ -69,7 +69,7 @@ The system operates on a continuous cycle:
 │     └─→ Store raw measurements in SQLite                 │
 │                                                          │
 │  2. Every 60 seconds: Aggregate                          │
-│     └─→ SQL GROUP BY → 1-minute summaries               │
+│     └─→ SQL GROUP BY → 1-minute summaries                │
 │                                                          │
 │  3. Send to Server                                       │
 │     └─→ POST /api/v1/metrics                             │

@@ -82,45 +82,11 @@ jobs:
             features: ""
 
           # ============ FULL BUILDS (with sql-tasks and snmp-tasks) ============
+          # Note: Only targets with reliable OpenSSL cross-compilation are included
 
-          # Linux x86_64
+          # Linux x86_64 (native build - most reliable)
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-            use_cross: false
-            variant: full
-            features: "sql-tasks,snmp-tasks"
-
-          # Linux x86_64 (musl - static binary)
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-22.04
-            use_cross: true
-            variant: full
-            features: "sql-tasks,snmp-tasks"
-
-          # Linux ARM64
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-            use_cross: true
-            variant: full
-            features: "sql-tasks,snmp-tasks"
-
-          # Linux ARM64 (musl - static binary)
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-22.04
-            use_cross: true
-            variant: full
-            features: "sql-tasks,snmp-tasks"
-
-          # Linux ARMv7 (Raspberry Pi)
-          - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-22.04
-            use_cross: true
-            variant: full
-            features: "sql-tasks,snmp-tasks"
-
-          # macOS x86_64
-          - target: x86_64-apple-darwin
-            os: macos-15
             use_cross: false
             variant: full
             features: "sql-tasks,snmp-tasks"
@@ -132,9 +98,9 @@ jobs:
             variant: full
             features: "sql-tasks,snmp-tasks"
 
-          # Note: Windows "full" variant is not available because SNMP requires OpenSSL
-          # which has complex build requirements on Windows MSVC. Use the regular
-          # Windows build or run on WSL/Linux for SNMP support.
+          # Note: Other full builds disabled due to OpenSSL cross-compilation issues:
+          # - x86_64-unknown-linux-musl, aarch64-unknown-linux-gnu/musl, armv7, x86_64-apple-darwin
+          # Use the regular builds for those platforms, or build locally with --features
 
     steps:
       - name: Checkout code
