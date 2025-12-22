@@ -565,14 +565,12 @@ impl Agent {
                 false
             };
 
-            // If config is stale and auto-update is enabled, download and apply new config
-            if config_needs_update && auto_update_enabled {
-                info!("Auto-update enabled, downloading new configuration from server");
-                if let Err(e) = self.download_and_apply_config().await {
-                    error!("Failed to download and apply new configuration: {}", e);
+            // If config is stale, check with server - we always need to respond
+            // to server requests for our config, regardless of auto_update_tasks setting
+            if config_needs_update {
+                if let Err(e) = self.handle_stale_config(auto_update_enabled).await {
+                    error!("Failed to handle stale config: {}", e);
                 }
-            } else if config_needs_update && !auto_update_enabled {
-                warn!("Config update available from server but auto_update_tasks is disabled");
             }
 
             self.last_metrics_send = current_time;
@@ -581,14 +579,18 @@ impl Agent {
         Ok(())
     }
 
-    /// Downloads new configuration from server and applies it
+    /// Handles stale config status from server
     ///
-    /// Calls the /api/v1/config/verify endpoint to get the new configuration,
-    /// then updates the tasks.toml file and reloads the scheduler.
+    /// When the server indicates config is stale, there are two scenarios:
+    /// 1. Server has a new config for us (tasks_toml provided) - only apply if auto_update_enabled
+    /// 2. Server doesn't have our config (no tasks_toml) - always upload our config
+    ///
+    /// # Parameters
+    /// * `auto_update_enabled` - Whether automatic config updates from server are allowed
     ///
     /// # Returns
-    /// `Ok(())` on success, error if download or application fails
-    async fn download_and_apply_config(&mut self) -> Result<()> {
+    /// `Ok(())` on success, error if the operation fails
+    async fn handle_stale_config(&mut self, auto_update_enabled: bool) -> Result<()> {
         let agent_config = self
             .config_manager
             .agent_config
@@ -601,7 +603,7 @@ impl Agent {
             .get_tasks_config_hash()
             .context("Failed to calculate tasks config hash")?;
 
-        info!("Downloading new configuration from server");
+        info!("Checking config status with server");
 
         // Prepare request
         let request = shared::api::ConfigVerifyRequest {
@@ -653,76 +655,21 @@ impl Agent {
         // Check if we received new config
         if verify_response.config_status == shared::api::ConfigStatus::Stale {
             if let Some(tasks_toml_compressed) = verify_response.tasks_toml {
-                info!("Received new configuration from server, applying update");
-
-                // Decode base64
-                let compressed_data = base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &tasks_toml_compressed,
-                )
-                .context("Failed to decode base64 config")?;
-
-                // Decompress gzip
-                use std::io::Read;
-                let mut decoder = flate2::read::GzDecoder::new(&compressed_data[..]);
-                let mut new_tasks_toml = String::new();
-                decoder
-                    .read_to_string(&mut new_tasks_toml)
-                    .context("Failed to decompress config")?;
-
-                // Update config using ConfigManager
-                self.config_manager
-                    .update_tasks_config(&new_tasks_toml)
-                    .await
-                    .context("Failed to update tasks configuration")?;
-
-                // Reload scheduler with new tasks
-                if let Some(scheduler) = self.task_scheduler.as_mut() {
-                    let new_tasks_config = self
-                        .config_manager
-                        .tasks_config
-                        .as_ref()
-                        .expect("Tasks config should be loaded after update")
-                        .clone();
-
-                    // Stop current scheduler
-                    scheduler.stop().await?;
-
-                    // Extract server config for bandwidth tests (None if local-only mode)
-                    let (server_url, api_key, agent_id) = if !agent_config.local_only {
-                        (
-                            Some(agent_config.central_server_url.clone()),
-                            Some(agent_config.api_key.clone()),
-                            Some(agent_config.agent_id.clone()),
-                        )
-                    } else {
-                        (None, None, None)
-                    };
-
-                    // Create new scheduler with new config
-                    let new_scheduler = TaskScheduler::new(
-                        new_tasks_config,
-                        scheduler.database.clone(),
-                        agent_config.metrics_flush_interval_seconds,
-                        agent_config.graceful_shutdown_timeout_seconds,
-                        agent_config.channel_buffer_size,
-                        agent_config.queue_cleanup_interval_seconds,
-                        server_url,
-                        api_key,
-                        agent_id,
-                    )?;
-
-                    *scheduler = new_scheduler;
-                    scheduler.start().await?;
-
-                    info!("Successfully applied new configuration and restarted scheduler");
+                // Server has a new config for us
+                if auto_update_enabled {
+                    info!("Received new configuration from server, applying update");
+                    self.apply_new_config(&agent_config, &tasks_toml_compressed)
+                        .await?;
                 } else {
-                    warn!("No scheduler to reload");
+                    warn!(
+                        "Server has new configuration available but auto_update_tasks is disabled"
+                    );
+                    warn!("Set auto_update_tasks = true in agent.toml to enable automatic updates");
                 }
             } else {
-                // Server doesn't have a config for us - upload our config
-                warn!("Server indicated config is stale but did not provide new config");
-                info!("Uploading local configuration to server");
+                // Server doesn't have a config for us - always upload our config
+                // This should happen regardless of auto_update_tasks setting
+                info!("Server requested agent configuration, uploading");
 
                 if let Err(e) = self.upload_config_to_server().await {
                     error!("Failed to upload configuration to server: {}", e);
@@ -733,6 +680,87 @@ impl Agent {
             }
         } else {
             debug!("Config is up to date according to server");
+        }
+
+        Ok(())
+    }
+
+    /// Applies a new configuration received from the server
+    ///
+    /// # Parameters
+    /// * `agent_config` - The agent configuration
+    /// * `tasks_toml_compressed` - Base64 encoded gzipped tasks.toml content
+    ///
+    /// # Returns
+    /// `Ok(())` on success, error if the operation fails
+    async fn apply_new_config(
+        &mut self,
+        agent_config: &shared::AgentConfig,
+        tasks_toml_compressed: &str,
+    ) -> Result<()> {
+        // Decode base64
+        let compressed_data = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            tasks_toml_compressed,
+        )
+        .context("Failed to decode base64 config")?;
+
+        // Decompress gzip
+        use std::io::Read;
+        let mut decoder = flate2::read::GzDecoder::new(&compressed_data[..]);
+        let mut new_tasks_toml = String::new();
+        decoder
+            .read_to_string(&mut new_tasks_toml)
+            .context("Failed to decompress config")?;
+
+        // Update config using ConfigManager
+        self.config_manager
+            .update_tasks_config(&new_tasks_toml)
+            .await
+            .context("Failed to update tasks configuration")?;
+
+        // Reload scheduler with new tasks
+        if let Some(scheduler) = self.task_scheduler.as_mut() {
+            let new_tasks_config = self
+                .config_manager
+                .tasks_config
+                .as_ref()
+                .expect("Tasks config should be loaded after update")
+                .clone();
+
+            // Stop current scheduler
+            scheduler.stop().await?;
+
+            // Extract server config for bandwidth tests (None if local-only mode)
+            let (server_url, api_key, agent_id) = if !agent_config.local_only {
+                (
+                    Some(agent_config.central_server_url.clone()),
+                    Some(agent_config.api_key.clone()),
+                    Some(agent_config.agent_id.clone()),
+                )
+            } else {
+                (None, None, None)
+            };
+
+            // Create new scheduler with new config
+            let new_scheduler = TaskScheduler::new(
+                new_tasks_config,
+                scheduler.database.clone(),
+                agent_config.metrics_flush_interval_seconds,
+                agent_config.graceful_shutdown_timeout_seconds,
+                agent_config.channel_buffer_size,
+                agent_config.queue_cleanup_interval_seconds,
+                server_url,
+                api_key,
+                agent_id,
+            )?;
+
+            *scheduler = new_scheduler;
+            scheduler.start().await?;
+
+            info!("Successfully applied new configuration and restarted scheduler");
+        } else {
+            warn!("No scheduler to reload");
         }
 
         Ok(())

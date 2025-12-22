@@ -193,7 +193,7 @@ jobs:
           VARIANT=${{ matrix.variant }}
           RELEASE_DIR="linksense-${VERSION}-${TARGET}-${VARIANT}"
 
-          mkdir -p "$RELEASE_DIR/config-examples"
+          mkdir -p "$RELEASE_DIR"
 
           # Copy binaries
           cp "target/$TARGET/release/agent" "$RELEASE_DIR/"
@@ -204,9 +204,6 @@ jobs:
             strip "$RELEASE_DIR/agent" 2>/dev/null || true
             strip "$RELEASE_DIR/server" 2>/dev/null || true
           fi
-
-          # Copy config examples
-          cp -r agent/config/* "$RELEASE_DIR/config-examples/" 2>/dev/null || true
 
           # Create README
           cat > "$RELEASE_DIR/README.md" << EOF
@@ -232,10 +229,8 @@ jobs:
 
           ### Agent
 
-          1. Copy config examples: \`cp -r config-examples config\`
-          2. Edit \`config/agent.toml\` with your settings
-          3. Edit \`config/tasks.toml\` to define monitoring tasks
-          4. Run: \`./agent config/\`
+          1. Create a \`config\` directory with \`agent.toml\` and \`tasks.toml\`
+          2. Run: \`./agent config/\`
 
           ### Server
 
@@ -264,16 +259,11 @@ jobs:
           $VARIANT = "${{ matrix.variant }}"
           $RELEASE_DIR = "linksense-${VERSION}-${TARGET}-${VARIANT}"
 
-          New-Item -ItemType Directory -Force -Path "$RELEASE_DIR\config-examples"
+          New-Item -ItemType Directory -Force -Path "$RELEASE_DIR"
 
           # Copy binaries
           Copy-Item "target\$TARGET\release\agent.exe" "$RELEASE_DIR\"
           Copy-Item "target\$TARGET\release\server.exe" "$RELEASE_DIR\"
-
-          # Copy config examples
-          if (Test-Path "agent\config") {
-            Copy-Item -Recurse "agent\config\*" "$RELEASE_DIR\config-examples\" -ErrorAction SilentlyContinue
-          }
 
           # Create README
           $variantInfo = if ($VARIANT -eq "full") {
@@ -298,10 +288,8 @@ jobs:
 
           ### Agent
 
-          1. Copy config examples to a config folder
-          2. Edit config\agent.toml with your settings
-          3. Edit config\tasks.toml to define monitoring tasks
-          4. Run: agent.exe config\
+          1. Create a config folder with agent.toml and tasks.toml
+          2. Run: agent.exe config\
 
           ### Server
 
